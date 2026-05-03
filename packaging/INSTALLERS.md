@@ -1,6 +1,6 @@
 # 分发安装包：macOS（签名 / 公证 / DMG）与 Windows（Inno Setup / MSIX）
 
-本文假设你已用 PyInstaller 打出产物（见仓库根目录 `README.md` → **§7 Packaged GUI**）。
+本文假设你已用 PyInstaller 打出产物（见仓库根目录 [`README.md`](../README.md) → **快速开始** 第 7 节「打包桌面 GUI」；英文版见 [`README.en.md`](../README.en.md) 对应小节）。
 
 ---
 
