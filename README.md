@@ -1,5 +1,7 @@
 # doyin_youtube_tools V1.0
 
+中文文档：[README.zh-CN.md](./README.zh-CN.md)
+
 A versatile **Douyin (TikTok China) downloader with optional YouTube upload support**: batch-download videos, image-notes, music, collections, and creator profiles, then **upload eligible MP4s to YouTube** via OAuth and the resumable Data API (install the `[youtube]` extra and run `douyin-dl --youtube-auth`). Core features include real-time progress, automatic retries, SQLite deduplication, integrity checks, and browser fallback for login and anti-bot handling. Use CLI flags (`--youtube-*`), the desktop GUI, or set `youtube_upload.enabled: true` plus `youtube_upload.auto_after_download: true` in `config.yml` to **auto-upload each new video** after download (with valid `client_secret_path` / `token_path`).
 
 ### Supported

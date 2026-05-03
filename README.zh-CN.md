@@ -1,6 +1,8 @@
 # doyin_youtube_tools V1.0
 
-一个通用的**抖音（TikTok 中国区）下载工具，并支持可选的 YouTube 上传**：可批量下载视频、图文、音乐、合集与用户主页；在安装 `[youtube]` 依赖并完成 `douyin-dl --youtube-auth` 后，可将清单中的主 **MP4** 以 OAuth + 可断点续传方式**上传到 YouTube**（CLI `--youtube-*`、桌面 GUI，或在 `config.yml` 中开启 `youtube_upload.enabled` 与 `youtube_upload.auto_after_download` 实现**下载完成后自动上传**）。另提供实时进度、自动重试、SQLite 去重、完整性校验与浏览器兜底能力。
+**兼具抖音（TikTok 中国区）批量下载与可选 YouTube 上传**：可批量下载视频、图文、音乐、合集与用户主页；在安装 `[youtube]` 依赖并完成 `douyin-dl --youtube-auth` 后，可将 `download_manifest.jsonl` 中的主 **MP4** 通过 OAuth、按 **YouTube Data API 可断点续传** 上传至 YouTube。核心能力包括实时进度、自动重试、SQLite 去重、完整性校验，以及登录与反爬场景下的浏览器兜底。
+
+使用 CLI（`--youtube-*`）、桌面 GUI，或在 `config.yml` 中设置 `youtube_upload.enabled: true` 且 `youtube_upload.auto_after_download: true`，可在**每条新视频下载成功后自动上传**（需有效的 `client_secret_path` / `token_path`）。
 
 English: [README.md](./README.md)
 
@@ -22,7 +24,7 @@ English: [README.md](./README.md)
 | **热搜榜 + 关键词搜索** | `--hot-board [N]` / `--search "关键词"`，结果落 JSONL |
 | **REST API 服务模式** | `--serve --serve-port 8000`（可选 `fastapi + uvicorn`） |
 | **桌面 GUI** | 可选 PySide6：`douyin-dl-gui`（下载、Cookie、YouTube、设置、日志） |
-| **YouTube 上传（支持，可选）** | OAuth + 断点续传，上传至 YouTube；依据 `download_manifest.jsonl`；CLI `--youtube-*` 或 GUI；`youtube_upload.enabled` 与 `youtube_upload.auto_after_download` 同时为 true 时**每条新视频下载后自动上传** |
+| **YouTube 上传（支持，可选）** | OAuth + YouTube Data API 可断点续传；依据 `download_manifest.jsonl`；CLI `--youtube-*` 或 GUI；`youtube_upload.enabled` 与 `youtube_upload.auto_after_download` 同时为 true 时**每条新视频下载后自动上传** |
 | **完成通知推送** | 下载完成后推 Bark / Telegram / Webhook |
 | 附加资源下载 | 封面、音乐、头像、JSON 元数据 |
 | 视频转写 | 可选功能，调用 OpenAI Transcriptions API |
