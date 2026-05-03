@@ -35,6 +35,12 @@ class DownloadResult:
         self.success = 0
         self.failed = 0
         self.skipped = 0
+        self.messages: List[str] = []
+
+    def add_message(self, msg: str) -> None:
+        if not msg or msg in self.messages:
+            return
+        self.messages.append(msg)
 
     def __str__(self):
         return f"Total: {self.total}, Success: {self.success}, Failed: {self.failed}, Skipped: {self.skipped}"

@@ -564,10 +564,15 @@ class MainWindow(QMainWindow):
         self._download_worker = worker
         worker.start()
 
-    def _download_finished(self, total: int, success: int, failed: int, skipped: int) -> None:
+    def _download_finished(
+        self, total: int, success: int, failed: int, skipped: int, notes: str = ""
+    ) -> None:
         self._append_log(
             f"下载完成：total={total}, success={success}, failed={failed}, skipped={skipped}"
         )
+        if notes.strip():
+            for line in notes.strip().split("\n"):
+                self._append_log(line)
         self._set_status("就绪")
 
     def _start_youtube_auth(self) -> None:

@@ -30,7 +30,7 @@ class _BaseWorker(QThread):
 
 
 class DownloadWorker(_BaseWorker):
-    finished_summary = Signal(int, int, int, int)
+    finished_summary = Signal(int, int, int, int, str)
     step_changed = Signal(str, str)
     item_advanced = Signal(str, str)
 
@@ -57,6 +57,7 @@ class DownloadWorker(_BaseWorker):
             summary.success,
             summary.failed,
             summary.skipped,
+            "\n".join(summary.messages),
         )
 
 

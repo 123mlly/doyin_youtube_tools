@@ -45,6 +45,8 @@ _USER_AGENT_POOL = [
 
 class DouyinAPIClient:
     BASE_URL = "https://www.douyin.com"
+    # 直播进房等 webcast 接口在 live 子域，请求 www 会 HTTP 404
+    LIVE_BASE_URL = "https://live.douyin.com"
     _BROWSER_COOKIE_BLOCKLIST = {
         "sessionid",
         "sessionid_ss",
@@ -158,13 +160,20 @@ class DouyinAPIClient:
         signed_url, _xbogus, ua = self._signer.build(url)
         return signed_url, ua
 
-    def build_signed_path(self, path: str, params: Dict[str, Any]) -> Tuple[str, str]:
+    def build_signed_path(
+        self,
+        path: str,
+        params: Dict[str, Any],
+        *,
+        base_url: Optional[str] = None,
+    ) -> Tuple[str, str]:
         query = urlencode(params)
-        base_url = f"{self.BASE_URL}{path}"
-        ab_signed = self._build_abogus_url(base_url, query)
+        origin = (base_url or self.BASE_URL).rstrip("/")
+        full = f"{origin}{path}" if path.startswith("/") else f"{origin}/{path}"
+        ab_signed = self._build_abogus_url(full, query)
         if ab_signed:
             return ab_signed
-        return self.sign_url(f"{base_url}?{query}")
+        return self.sign_url(f"{full}?{query}")
 
     def _build_abogus_url(self, base_url: str, query: str) -> Optional[Tuple[str, str]]:
         if not self._abogus_enabled:
@@ -186,19 +195,27 @@ class DouyinAPIClient:
         *,
         suppress_error: bool = False,
         max_retries: int = 3,
+        extra_headers: Optional[Dict[str, str]] = None,
+        http_status_out: Optional[List[int]] = None,
+        base_url: Optional[str] = None,
     ) -> Dict[str, Any]:
         await self._ensure_session()
         delays = [1, 2, 5]
         last_exc: Optional[Exception] = None
 
         for attempt in range(max_retries):
-            signed_url, ua = self.build_signed_path(path, params)
+            signed_url, ua = self.build_signed_path(path, params, base_url=base_url)
             try:
+                req_headers = {**self.headers, "User-Agent": ua}
+                if extra_headers:
+                    req_headers.update(extra_headers)
                 async with self._session.get(
                     signed_url,
-                    headers={**self.headers, "User-Agent": ua},
+                    headers=req_headers,
                     proxy=self.proxy or None,
                 ) as response:
+                    if http_status_out is not None:
+                        http_status_out[:] = [response.status]
                     if response.status == 200:
                         data = await response.json(content_type=None)
                         return data if isinstance(data, dict) else {}
@@ -478,10 +495,10 @@ class DouyinAPIClient:
 
     async def get_live_room_info(
         self, room_id: str, *, sec_user_id: str = ""
-    ) -> Optional[Dict[str, Any]]:
+    ) -> Tuple[Optional[Dict[str, Any]], str]:
         """通过房间号（web_rid）拉取直播间信息。
 
-        返回包含 room_info + stream_url 的 dict；若房间不在直播中或接口失败返回 None。
+        返回 ``(info_dict, "")``；失败时 ``info_dict`` 为 ``None``，第二个元素为简短中文诊断（含 HTTP / 业务码）。
         """
         params = await self._default_query()
         params.update(
@@ -496,17 +513,44 @@ class DouyinAPIClient:
         if sec_user_id:
             params["sec_user_id"] = sec_user_id
 
+        live_page = f"https://live.douyin.com/{room_id}"
+        http_status_ref: List[int] = []
         raw = await self._request_json(
             "/webcast/room/web/enter/",
             params,
             suppress_error=True,
+            extra_headers={
+                "Referer": live_page + "/",
+                "Origin": "https://live.douyin.com",
+            },
+            http_status_out=http_status_ref,
+            base_url=self.LIVE_BASE_URL,
         )
+        http_sc = http_status_ref[0] if http_status_ref else None
         if not raw:
-            return None
+            if http_sc and http_sc != 200:
+                if http_sc == 404:
+                    return (
+                        None,
+                        "HTTP 404（房间号可能无效或已失效，或需更新 Cookie；"
+                        "请确认浏览器能打开同一 live 链接）。",
+                    )
+                return (
+                    None,
+                    f"HTTP {http_sc}（进房接口被拒绝或未授权，请更新 Cookie、检查代理或稍后再试）。",
+                )
+            return (
+                None,
+                "无有效 JSON 响应（网络中断、超时或 body 非 JSON）。",
+            )
 
         data_section = raw.get("data") if isinstance(raw.get("data"), dict) else raw
         if not isinstance(data_section, dict):
-            return None
+            biz = raw.get("status_code")
+            return (
+                None,
+                f"HTTP {http_sc or 200}，业务 status_code={biz}，data 非对象（接口异常）。",
+            )
 
         room_list = data_section.get("data")
         room = None
@@ -518,16 +562,35 @@ class DouyinAPIClient:
             room = data_section.get("room")
         elif isinstance(raw.get("room"), dict):
             room = raw.get("room")
+        # 嵌套 data.room / data.data.room
+        if not isinstance(room, dict):
+            inner = data_section.get("data")
+            if isinstance(inner, dict):
+                nested_room = inner.get("room")
+                if isinstance(nested_room, dict):
+                    room = nested_room
 
         if not isinstance(room, dict):
-            return None
+            biz = raw.get("status_code")
+            logger.warning(
+                "webcast/room/web/enter: could not parse room (status_code=%s, top_keys=%s)",
+                biz,
+                list(raw.keys())[:15],
+            )
+            return (
+                None,
+                f"HTTP {http_sc or 200}，业务 status_code={biz}，未解析到 room（多为登录态失效或接口改版）。",
+            )
 
         user = data_section.get("user") if isinstance(data_section, dict) else None
-        return {
-            "room": room,
-            "user": user if isinstance(user, dict) else {},
-            "raw": raw,
-        }
+        return (
+            {
+                "room": room,
+                "user": user if isinstance(user, dict) else {},
+                "raw": raw,
+            },
+            "",
+        )
 
     async def get_hot_search_board(self) -> Dict[str, Any]:
         """获取抖音热搜榜。返回归一化 dict，items 为热搜词条列表。"""

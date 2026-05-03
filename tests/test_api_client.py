@@ -20,6 +20,17 @@ def test_build_signed_path_fallbacks_to_xbogus_when_abogus_disabled():
     assert "X-Bogus=" in signed_url
 
 
+def test_build_signed_path_uses_live_host_for_webcast():
+    client = DouyinAPIClient({"msToken": "token-1"})
+    client._abogus_enabled = False
+    signed_url, _ua = client.build_signed_path(
+        "/webcast/room/web/enter/",
+        {"web_rid": "1"},
+        base_url=client.LIVE_BASE_URL,
+    )
+    assert signed_url.startswith("https://live.douyin.com/webcast/room/web/enter/")
+
+
 def test_build_signed_path_prefers_abogus(monkeypatch):
     class _FakeFp:
         @staticmethod

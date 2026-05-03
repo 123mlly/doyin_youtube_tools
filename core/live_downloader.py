@@ -55,16 +55,25 @@ class LiveDownloader(BaseDownloader):
         room_id = parsed_url.get("room_id")
         if not room_id:
             logger.error("No room_id found in parsed URL")
+            result.add_message("直播：未能从链接解析房间号，请使用 live.douyin.com/数字 或含 /live/数字 的链接。")
             return result
 
         result.total = 1
         self._progress_set_item_total(1, "直播录制")
         self._progress_update_step("获取直播间信息", f"room_id={room_id}")
 
-        info = await self.api_client.get_live_room_info(str(room_id))
+        res = await self.api_client.get_live_room_info(str(room_id))
+        if isinstance(res, tuple) and len(res) == 2:
+            info, fetch_diag = res[0], str(res[1] or "")
+        else:
+            info, fetch_diag = res, ""
         if not info:
             logger.error("Live room not available or fetch failed: %s", room_id)
             result.failed += 1
+            detail = fetch_diag.strip() or (
+                "请检查 Cookie、网络/代理，或加 -v/--show-warnings 查看接口返回。"
+            )
+            result.add_message(f"直播房间 {room_id}：拉取房间信息失败。{detail}")
             self._progress_advance_item("failed", str(room_id))
             return result
 
@@ -78,6 +87,10 @@ class LiveDownloader(BaseDownloader):
                 "Room %s not live (status=%s); skipping", room_id, status
             )
             result.skipped += 1
+            result.add_message(
+                f"直播房间 {room_id}：当前未在播（接口 status={status}，需为 2 才录制）。"
+                "请确认主播正在开播后再试。"
+            )
             self._progress_advance_item("skipped", str(room_id))
             return result
 
@@ -85,6 +98,9 @@ class LiveDownloader(BaseDownloader):
         if not stream_url:
             logger.error("No playable live stream URL for room %s", room_id)
             result.failed += 1
+            result.add_message(
+                f"直播房间 {room_id}：接口未返回可用的 FLV/HLS 拉流地址（字段可能变更或本场无流）。"
+            )
             self._progress_advance_item("failed", str(room_id))
             return result
 
@@ -136,6 +152,10 @@ class LiveDownloader(BaseDownloader):
             logger.info("Live recording finished: %s", target_path)
         else:
             result.failed += 1
+            result.add_message(
+                f"直播房间 {room_id}：拉流写入失败（网络中断、CDN 403/404、超时等）。"
+                "可加 -v 查看详细日志。"
+            )
             self._progress_advance_item("failed", str(room_id))
 
         return result

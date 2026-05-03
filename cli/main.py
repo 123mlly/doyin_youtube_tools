@@ -251,6 +251,8 @@ async def main_async(args):
             total_result.success += r.success
             total_result.failed += r.failed
             total_result.skipped += r.skipped
+            for msg in getattr(r, "messages", ()) or ():
+                total_result.add_message(msg)
 
         display.print_success("\n=== Overall Summary ===")
         display.show_result(total_result)

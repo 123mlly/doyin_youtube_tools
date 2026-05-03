@@ -242,6 +242,11 @@ class ProgressDisplay:
             table.add_row("Success Rate", f"{success_rate:.1f}%")
 
         self._active_console().print(table)
+        notes = getattr(result, "messages", None) or []
+        if notes:
+            self._active_console().print()
+            for line in notes:
+                self.print_info(line)
 
     def print_info(self, message: str):
         self._active_console().print(f"[blue]ℹ[/blue] {message}")

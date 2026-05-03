@@ -236,6 +236,9 @@ def _merge_result(summary: DownloadSummary, result: DownloadResult) -> None:
     summary.success += result.success
     summary.failed += result.failed
     summary.skipped += result.skipped
+    for msg in getattr(result, "messages", ()) or ():
+        if msg and msg not in summary.messages:
+            summary.messages.append(msg)
 
 
 def _update_config_cookies(config_path: Path, cookies: Dict[str, str]) -> None:
