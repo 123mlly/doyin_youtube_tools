@@ -1,10 +1,10 @@
 # doyin_youtube_tools V1.0
 
+**本文档为仓库默认说明（中文）。** 英文说明见 [README.md](./README.md)。
+
 **兼具抖音（TikTok 中国区）批量下载与可选 YouTube 上传**：可批量下载视频、图文、音乐、合集与用户主页；在安装 `[youtube]` 依赖并完成 `douyin-dl --youtube-auth` 后，可将 `download_manifest.jsonl` 中的主 **MP4** 通过 OAuth、按 **YouTube Data API 可断点续传** 上传至 YouTube。核心能力包括实时进度、自动重试、SQLite 去重、完整性校验，以及登录与反爬场景下的浏览器兜底。
 
-使用 CLI（`--youtube-*`）、桌面 GUI，或在 `config.yml` 中设置 `youtube_upload.enabled: true` 且 `youtube_upload.auto_after_download: true`，可在**每条新视频下载成功后自动上传**（需有效的 `client_secret_path` / `token_path`）。
-
-English: [README.md](./README.md)
+使用 CLI（`--youtube-*`）、桌面 GUI，或在 `config.yml` 中设置 `youtube_upload.enabled: true` 且 `youtube_upload.auto_after_download: true`，可在**每条新视频下载成功后自动上传**（需有效的 `client_secret_path` / `token_path`）。与 `config.example.yml` 一致，**YouTube 上传相关项默认关闭**（`enabled`、`auto_after_download` 等为 `false`），需要时再改为 `true`。
 
 ### 已支持能力
 
