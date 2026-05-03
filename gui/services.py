@@ -18,6 +18,7 @@ from utils.youtube_uploader import (
     publish_latest_from_manifest,
     run_youtube_auth,
     youtube_settings,
+    youtube_upload_report_events,
 )
 
 LogCallback = Optional[Callable[[str], None]]
@@ -221,7 +222,9 @@ async def upload_latest_to_youtube(
             database=database,
         )
         if log:
-            log("YouTube results: %s" % ", ".join(result.status for result in results))
+            prefix = {"success": "", "warning": "[!] ", "info": "[i] "}
+            for level, text in youtube_upload_report_events(results):
+                log(prefix.get(level, "") + text)
         return results
     finally:
         if database is not None:

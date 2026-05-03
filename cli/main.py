@@ -20,6 +20,7 @@ from utils.youtube_uploader import (
     publish_latest_from_manifest,
     run_youtube_auth,
     youtube_settings,
+    youtube_upload_report_events,
 )
 
 logger = setup_logger('CLI')
@@ -356,14 +357,13 @@ async def _run_youtube_upload_latest_subcommand(args, config: ConfigLoader) -> N
         if database is not None:
             await database.close()
 
-    success = sum(1 for result in results if result.status == "success")
-    dry_run = sum(1 for result in results if result.status == "dry_run")
-    skipped = sum(1 for result in results if result.status == "skipped")
-    failed = sum(1 for result in results if result.status == "failure")
-    display.print_success(
-        f"YouTube upload latest done: success={success}, dry_run={dry_run}, "
-        f"skipped={skipped}, failed={failed}"
-    )
+    for level, text in youtube_upload_report_events(results):
+        if level == "success":
+            display.print_success(text)
+        elif level == "warning":
+            display.print_warning(text)
+        else:
+            display.print_info(text)
 
 
 def _safe_history_config(raw_config: dict) -> dict:

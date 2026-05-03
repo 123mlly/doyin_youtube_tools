@@ -279,6 +279,13 @@ class MainWindow(QMainWindow):
             "",
             self._hint("N 为 0 表示处理清单中的全部记录；数据来源为保存目录下的 download_manifest.jsonl。"),
         )
+        upload_form.addRow(
+            "",
+            self._hint(
+                "批量上传会消耗 YouTube Data API 配额；若失败多为 quotaExceeded，请减少 N 或次日再传。"
+                " 上传结束后日志区会显示与命令行一致的分组说明。"
+            ),
+        )
 
         root.addWidget(cred_group)
         root.addWidget(upload_group)
@@ -592,10 +599,14 @@ class MainWindow(QMainWindow):
     def _youtube_upload_finished(
         self, success: int, dry_run: int, skipped: int, failed: int
     ) -> None:
-        self._append_log(
-            f"YouTube 完成：success={success}, dry_run={dry_run}, skipped={skipped}, failed={failed}"
-        )
-        self._set_status("就绪")
+        if failed and not success:
+            self._set_status(f"YouTube 已结束（成功 {success}，失败 {failed}，详见日志）")
+        elif failed:
+            self._set_status(f"YouTube 已结束（成功 {success}，失败 {failed}，跳过 {skipped}）")
+        else:
+            self._set_status(
+                f"YouTube 已结束（成功 {success}，预演 {dry_run}，跳过 {skipped}）"
+            )
 
     def _on_youtube_authorized(self, path: str) -> None:
         self._append_log(f"YouTube token saved: {path}")

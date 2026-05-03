@@ -3,10 +3,12 @@ from __future__ import annotations
 import asyncio
 import json
 import random
+import re
 import time
+import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import aiofiles
 
@@ -18,6 +20,18 @@ YOUTUBE_UPLOAD_SCOPE = "https://www.googleapis.com/auth/youtube.upload"
 RETRIABLE_STATUS_CODES = {500, 502, 503, 504}
 MAX_RETRIES = 5
 VALID_PRIVACY_STATUSES = {"public", "private", "unlisted"}
+# YouTube snippet limits (conservative; avoids 400 from oversized tags / description)
+YOUTUBE_MAX_TAGS = 30
+YOUTUBE_MAX_TAG_LEN = 30
+YOUTUBE_MAX_DESCRIPTION_CHARS = 5000
+
+
+def _suppress_google_future_warnings() -> None:
+    warnings.filterwarnings(
+        "ignore",
+        category=FutureWarning,
+        module=r"google\.api_core(\.|$)",
+    )
 
 
 class YouTubeUploadError(Exception):
@@ -33,6 +47,75 @@ class YouTubeUploadResult:
     dry_run: bool = False
     file_path: Optional[str] = None
     title: Optional[str] = None
+
+
+def youtube_upload_report_events(
+    results: List[YouTubeUploadResult],
+) -> List[Tuple[str, str]]:
+    """(level, message) for CLI / GUI: level is success | warning | info."""
+    events: List[Tuple[str, str]] = []
+    if not results:
+        events.append(("info", "YouTube：无待处理记录。"))
+        return events
+    success = sum(1 for r in results if r.status == "success")
+    dry_run = sum(1 for r in results if r.status == "dry_run")
+    skipped = sum(1 for r in results if r.status == "skipped")
+    failed = sum(1 for r in results if r.status == "failure")
+    events.append(
+        (
+            "success",
+            f"YouTube 上传完成：成功={success}, 预演={dry_run}, 跳过={skipped}, 失败={failed}",
+        )
+    )
+    if failed:
+        buckets: Dict[str, List[str]] = {}
+        for r in results:
+            if r.status != "failure":
+                continue
+            detail = (r.error_message or "unknown").strip()
+            buckets.setdefault(detail, []).append(r.aweme_id)
+        events.append(("warning", "失败明细（按原因分组）："))
+        for detail, ids in buckets.items():
+            events.append(("warning", f"  ×{len(ids)}  {detail[:420]}"))
+            if len(ids) <= 8:
+                events.append(("warning", f"    aweme_id: {', '.join(ids)}"))
+            else:
+                events.append(
+                    (
+                        "warning",
+                        f"    aweme_id: {', '.join(ids[:8])}, …（共 {len(ids)} 条）",
+                    )
+                )
+    if skipped:
+        reasons: Dict[str, int] = {}
+        no_reason = 0
+        for r in results:
+            if r.status != "skipped":
+                continue
+            msg = (r.error_message or "").strip()
+            if msg:
+                reasons[msg] = reasons.get(msg, 0) + 1
+            else:
+                no_reason += 1
+        if reasons or no_reason:
+            parts = ["跳过统计："]
+            if no_reason:
+                parts.append(f"无原因记录={no_reason}")
+            if reasons:
+                parts.append(
+                    "; ".join(f"{k}={v}" for k, v in sorted(reasons.items()))
+                )
+            events.append(("info", " ".join(parts)))
+    if failed and not success:
+        events.append(
+            (
+                "info",
+                "若出现 quotaExceeded，为当日 YouTube Data API 配额用尽，通常次日恢复；"
+                "详见 https://developers.google.com/youtube/v3/getting-started#quota 。"
+                " CLI 可加 -v 查看详细日志。",
+            )
+        )
+    return events
 
 
 class _SafeFormatDict(dict):
@@ -113,9 +196,17 @@ class YouTubeUploader:
                 aweme_id="", status="skipped", error_message="missing aweme_id"
             )
         if not (self.enabled or force):
-            return YouTubeUploadResult(aweme_id=aweme_id, status="skipped")
+            return YouTubeUploadResult(
+                aweme_id=aweme_id,
+                status="skipped",
+                error_message="youtube_upload disabled",
+            )
         if self.database and await self.database.is_youtube_uploaded(aweme_id):
-            return YouTubeUploadResult(aweme_id=aweme_id, status="skipped")
+            return YouTubeUploadResult(
+                aweme_id=aweme_id,
+                status="skipped",
+                error_message="already uploaded (success in database)",
+            )
 
         video_path = self.select_video_path(base_path, record)
         if video_path is None:
@@ -147,7 +238,7 @@ class YouTubeUploader:
         try:
             video_id = await self._upload_video_async(video_path, metadata)
         except Exception as exc:
-            message = str(exc)
+            message = _format_upload_exception(exc)
             logger.warning("YouTube upload failed for %s: %s", aweme_id, message)
             result = YouTubeUploadResult(
                 aweme_id=aweme_id,
@@ -196,10 +287,13 @@ class YouTubeUploader:
             or "{desc}\n\nAuthor: {author_name}\nAweme ID: {aweme_id}"
         )
         title = title_template.format_map(values).strip() or values["aweme_id"]
-        description = description_template.format_map(values).strip()
-        tags = self.settings.get("tags") or []
-        if not isinstance(tags, list):
-            tags = []
+        description = _truncate_description(
+            description_template.format_map(values).strip()
+        )
+        tags = _normalize_youtube_tags(
+            self.settings.get("tags"),
+            record.get("tags"),
+        )
         privacy_status = str(self.settings.get("privacy_status") or "public")
         if privacy_status not in VALID_PRIVACY_STATUSES:
             privacy_status = "public"
@@ -256,7 +350,23 @@ class YouTubeUploader:
 
 
 def run_youtube_auth(settings: Dict[str, Any]) -> Dict[str, Any]:
+    _suppress_google_future_warnings()
     return YouTubeAuthManager(settings).run_authorization()
+
+
+def _dedupe_manifest_batch(records: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Keep last manifest line per aweme_id (file order); drops earlier duplicates."""
+    seen: set[str] = set()
+    out: List[Dict[str, Any]] = []
+    for record in reversed(records):
+        aid = str(record.get("aweme_id") or "").strip()
+        if aid:
+            if aid in seen:
+                continue
+            seen.add(aid)
+        out.append(record)
+    out.reverse()
+    return out
 
 
 async def publish_latest_from_manifest(
@@ -265,7 +375,10 @@ async def publish_latest_from_manifest(
     limit: int,
     database: Any = None,
 ) -> List[YouTubeUploadResult]:
-    records = await _read_latest_manifest_records(base_path, limit)
+    _suppress_google_future_warnings()
+    records = _dedupe_manifest_batch(
+        await _read_latest_manifest_records(base_path, limit)
+    )
     uploader = YouTubeUploader({**settings, "enabled": True}, database=database)
     results = []
     max_items = int(settings.get("max_items_per_run") or 0)
@@ -393,3 +506,143 @@ def _truncate_title(title: str) -> str:
     if len(title) <= 100:
         return title
     return title[:97].rstrip() + "..."
+
+
+def _truncate_description(text: str) -> str:
+    if len(text) <= YOUTUBE_MAX_DESCRIPTION_CHARS:
+        return text
+    return text[: YOUTUBE_MAX_DESCRIPTION_CHARS - 3].rstrip() + "..."
+
+
+def _normalize_youtube_tags(*tag_sources: Any) -> List[str]:
+    """Merge tag lists, dedupe, enforce YouTube-friendly length/count."""
+    seen: set[str] = set()
+    out: List[str] = []
+    for source in tag_sources:
+        items: List[Any]
+        if source is None:
+            continue
+        if isinstance(source, (list, tuple)):
+            items = list(source)
+        else:
+            items = [source]
+        for raw in items:
+            s = str(raw).strip().lstrip("#")
+            if not s:
+                continue
+            s = s[:YOUTUBE_MAX_TAG_LEN]
+            key = s.casefold()
+            if key in seen:
+                continue
+            seen.add(key)
+            out.append(s)
+            if len(out) >= YOUTUBE_MAX_TAGS:
+                return out
+    return out
+
+
+_HTML_TAG_RE = re.compile(r"<[^>]+>")
+
+
+def _strip_html(text: str) -> str:
+    s = _HTML_TAG_RE.sub("", text)
+    return (
+        s.replace("&quot;", '"')
+        .replace("&lt;", "<")
+        .replace("&gt;", ">")
+        .replace("&amp;", "&")
+        .replace("\n", " ")
+    )
+
+
+def _unwrap_google_http_error(exc: BaseException) -> Optional[Any]:
+    """ResumableUploadError etc. often wrap googleapiclient.errors.HttpError."""
+    stack: List[BaseException] = [exc]
+    visited: set[int] = set()
+    while stack:
+        cur = stack.pop()
+        if not isinstance(cur, BaseException):
+            continue
+        cid = id(cur)
+        if cid in visited:
+            continue
+        visited.add(cid)
+        mod = getattr(type(cur), "__module__", "") or ""
+        name = type(cur).__name__
+        if name == "HttpError" and "googleapiclient" in mod:
+            return cur
+        cause = getattr(cur, "__cause__", None)
+        if isinstance(cause, BaseException) and id(cause) not in visited:
+            stack.append(cause)
+        ctx = getattr(cur, "__context__", None)
+        if (
+            isinstance(ctx, BaseException)
+            and ctx is not cause
+            and id(ctx) not in visited
+        ):
+            stack.append(ctx)
+        for arg in getattr(cur, "args", ()) or ():
+            if isinstance(arg, BaseException):
+                stack.append(arg)
+    return None
+
+
+def _format_upload_exception(exc: BaseException) -> str:
+    """Readable API / transport errors for logs and CLI."""
+    http = _unwrap_google_http_error(exc)
+    if http is not None:
+        return _format_google_http_error(http)
+    text = str(exc)
+    if "quotaExceeded" in text or (
+        "youtube.quota" in text and "403" in text
+    ):
+        return (
+            "HTTP 403 | quotaExceeded: YouTube Data API 上传/写入配额已用完"
+            "（默认按天重置，见 https://developers.google.com/youtube/v3/getting-started#quota ）"
+        )
+    return f"{type(exc).__name__}: {_strip_html(text)[:500]}"
+
+
+def _format_google_http_error(exc: Any) -> str:
+    parts: List[str] = []
+    status = getattr(getattr(exc, "resp", None), "status", None)
+    if status is not None:
+        parts.append(f"HTTP {status}")
+    details = getattr(exc, "error_details", None) or ()
+    for item in details[:3]:
+        if isinstance(item, dict):
+            msg = item.get("message") or str(item)
+            reason = item.get("reason", "")
+            if reason:
+                parts.append(f"{reason}: {msg}")
+            else:
+                parts.append(msg)
+        else:
+            parts.append(str(item))
+    raw = getattr(exc, "content", None)
+    if not parts and raw:
+        try:
+            if isinstance(raw, bytes):
+                raw = raw.decode("utf-8", errors="replace")
+            data = json.loads(raw)
+            err = data.get("error") or {}
+            parts.append(err.get("message", str(data))[:500])
+            for e in (err.get("errors") or [])[:3]:
+                if isinstance(e, dict):
+                    parts.append(
+                        f"{e.get('reason', 'error')}: {e.get('message', '')}"[:300]
+                    )
+        except (json.JSONDecodeError, TypeError, ValueError):
+            parts.append(str(raw)[:300])
+    if not parts:
+        parts.append(str(exc))
+    joined = " | ".join(_strip_html(p) for p in parts)
+    joined = " ".join(joined.split())
+    if "quotaExceeded" in joined or "youtube.quota" in joined:
+        return (
+            "HTTP 403 | quotaExceeded: YouTube Data API 上传/写入配额已用完"
+            "（默认按天重置，见 https://developers.google.com/youtube/v3/getting-started#quota ）"
+        )
+    if len(joined) > 400:
+        return joined[:397] + "..."
+    return joined

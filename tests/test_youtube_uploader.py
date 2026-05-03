@@ -5,7 +5,11 @@ import pytest
 from utils.youtube_uploader import (
     YouTubeUploader,
     YouTubeUploadError,
+    YouTubeUploadResult,
+    _dedupe_manifest_batch,
+    _normalize_youtube_tags,
     publish_latest_from_manifest,
+    youtube_upload_report_events,
 )
 
 
@@ -79,13 +83,49 @@ def test_youtube_uploader_builds_metadata_from_templates():
             "aweme_id": "123",
             "desc": "hello",
             "author_name": "Author",
+            "tags": ["shorts", "extra"],  # duplicate 'shorts' case-insensitive merge
         }
     )
 
     assert metadata["title"] == "Douyin 123: hello"
     assert metadata["description"] == "hello\nby Author"
     assert metadata["privacy_status"] == "public"
-    assert metadata["tags"] == ["douyin", "shorts"]
+    assert metadata["tags"] == ["douyin", "shorts", "extra"]
+
+
+def test_normalize_youtube_tags_caps_count_and_length():
+    many = [f"t{i}" for i in range(50)]
+    merged = _normalize_youtube_tags(["a" * 40], many)
+    assert len(merged) == 30
+    assert all(len(t) <= 30 for t in merged)
+    assert merged[0] == "a" * 30
+
+
+def test_youtube_upload_report_events_groups_failures():
+    results = [
+        YouTubeUploadResult(
+            aweme_id="1", status="failure", error_message="HTTP 403 | quotaExceeded: x"
+        ),
+        YouTubeUploadResult(
+            aweme_id="2", status="failure", error_message="HTTP 403 | quotaExceeded: x"
+        ),
+        YouTubeUploadResult(aweme_id="3", status="skipped", error_message="already"),
+    ]
+    events = youtube_upload_report_events(results)
+    levels = [e[0] for e in events]
+    assert "success" in levels
+    assert levels.count("warning") >= 2
+    assert any("×2" in e[1] for e in events)
+
+
+def test_dedupe_manifest_batch_keeps_last_per_aweme():
+    batch = [
+        {"aweme_id": "1", "n": 1},
+        {"aweme_id": "2", "n": 2},
+        {"aweme_id": "1", "n": 3},
+    ]
+    out = _dedupe_manifest_batch(batch)
+    assert [r["n"] for r in out] == [2, 3]
 
 
 @pytest.mark.asyncio
