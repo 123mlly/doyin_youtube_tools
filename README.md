@@ -1,23 +1,6 @@
-# Douyin Downloader V2.0
+# doyin_youtube_tools V1.0
 
-<p align="center">
-  <img src="https://socialify.git.ci/jiji262/douyin-downloader/image?custom_description=Douyin+batch+download+tool%2C+remove+watermarks%2C+support+batch+download+of+videos%2C+gallery%2C+and+author+homepages.&description=1&font=Source+Code+Pro&forks=1&owner=1&pattern=Circuit+Board&stargazers=1&theme=Light" alt="douyin-downloader" width="820" />
-</p>
-
-<p align="center">
-    <a href="https://linux.do" alt="LINUX DO">
-        <img
-            src="https://img.shields.io/badge/LINUX-DO-FFB003.svg?logo=data:image/svg%2bxml;base64,DQo8c3ZnIHhtbG5zPSJodHRwOi8vd3d3LnczLm9yZy8yMDAwL3N2ZyIgd2lkdGg9IjEwMCIgaGVpZ2h0PSIxMDAiPjxwYXRoIGQ9Ik00Ni44Mi0uMDU1aDYuMjVxMjMuOTY5IDIuMDYyIDM4IDIxLjQyNmM1LjI1OCA3LjY3NiA4LjIxNSAxNi4xNTYgOC44NzUgMjUuNDV2Ni4yNXEtMi4wNjQgMjMuOTY4LTIxLjQzIDM4LTExLjUxMiA3Ljg4NS0yNS40NDUgOC44NzRoLTYuMjVxLTIzLjk3LTIuMDY0LTM4LjAwNC0yMS40M1EuOTcxIDY3LjA1Ni0uMDU0IDUzLjE4di02LjQ3M0MxLjM2MiAzMC43ODEgOC41MDMgMTguMTQ4IDIxLjM3IDguODE3IDI5LjA0NyAzLjU2MiAzNy41MjcuNjA0IDQ2LjgyMS0uMDU2IiBzdHlsZT0ic3Ryb2tlOm5vbmU7ZmlsbC1ydWxlOmV2ZW5vZGQ7ZmlsbDojZWNlY2VjO2ZpbGwtb3BhY2l0eToxIi8+PHBhdGggZD0iTTQ3LjI2NiAyLjk1N3EyMi41My0uNjUgMzcuNzc3IDE1LjczOGE0OS43IDQ5LjcgMCAwIDEgNi44NjcgMTAuMTU3cS00MS45NjQuMjIyLTgzLjkzIDAgOS43NS0xOC42MTYgMzAuMDI0LTI0LjM4N2E2MSA2MSAwIDAgMSA5LjI2Mi0xLjUwOCIgc3R5bGU9InN0cm9rZTpub25lO2ZpbGwtcnVsZTpldmVub2RkO2ZpbGw6IzE5MTkxOTtmaWxsLW9wYWNpdHk6MSIvPjxwYXRoIGQ9Ik03Ljk4IDcwLjkyNmMyNy45NzctLjAzNSA1NS45NTQgMCA4My45My4xMTNRODMuNDI2IDg3LjQ3MyA2Ni4xMyA5NC4wODZxLTE4LjgxIDYuNTQ0LTM2LjgzMi0xLjg5OC0xNC4yMDMtNy4wOS0yMS4zMTctMjEuMjYyIiBzdHlsZT0ic3Ryb2tlOm5vbmU7ZmlsbC1ydWxlOmV2ZW5vZGQ7ZmlsbDojZjlhZjAwO2ZpbGwtb3BhY2l0eToxIi8+PC9zdmc+" /></a>
-</p>
-中文文档 (Chinese): [README.zh-CN.md](./README.zh-CN.md)
-
-
-A practical Douyin downloader supporting videos, image-notes, collections, music, favorites collections, and profile batch downloads, with progress display, retries, SQLite deduplication, download integrity checks, and browser fallback support.
-
-> This document targets **V2.0 (`main` branch)**.  
-> For the legacy version, switch to **V1.0**: `git fetch --all && git switch V1.0`
-
-## Feature Overview
+A versatile **Douyin (TikTok China) downloader with optional YouTube upload support**: batch-download videos, image-notes, music, collections, and creator profiles, then **upload eligible MP4s to YouTube** via OAuth and the resumable Data API (install the `[youtube]` extra and run `douyin-dl --youtube-auth`). Core features include real-time progress, automatic retries, SQLite deduplication, integrity checks, and browser fallback for login and anti-bot handling. Use CLI flags (`--youtube-*`), the desktop GUI, or set `youtube_upload.enabled: true` plus `youtube_upload.auto_after_download: true` in `config.yml` to **auto-upload each new video** after download (with valid `client_secret_path` / `token_path`).
 
 ### Supported
 
@@ -37,7 +20,7 @@ A practical Douyin downloader supporting videos, image-notes, collections, music
 | **Hot search + keyword search** | `--hot-board [N]` / `--search "keyword"` dumps to JSONL |
 | **REST API server mode** | `--serve --serve-port 8000` (optional `fastapi + uvicorn`) |
 | **Desktop GUI** | Optional PySide6 app: `douyin-dl-gui` (download, cookies, YouTube, settings, logs) |
-| **YouTube upload (optional)** | OAuth + resumable upload from `download_manifest.jsonl`; CLI `--youtube-*` flags |
+| **YouTube upload (supported, optional)** | OAuth + resumable upload to YouTube from `download_manifest.jsonl`; CLI `--youtube-*` or GUI; **auto-upload** each new video when `youtube_upload.enabled` and `youtube_upload.auto_after_download` are true |
 | **Notification push** | Bark / Telegram / Webhook on download completion |
 | Extra assets | Cover, music, avatar, JSON metadata |
 | Video transcription | Optional, using OpenAI Transcriptions API |
@@ -649,4 +632,3 @@ By continuing to use this project, you acknowledge and accept the statements abo
 ## License
 
 This project is licensed under the MIT License. See [LICENSE](./LICENSE) for details.
-# doyin_youtube_tools
