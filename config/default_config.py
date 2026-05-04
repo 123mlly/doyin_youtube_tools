@@ -70,7 +70,8 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "live": {
         "max_duration_seconds": 0,  # 0 = 直到流结束
         "chunk_size": 65536,
-        "idle_timeout_seconds": 30,
+        # 单次读流超过该秒数无新数据则结束录制（保留已录部分）；过小易误判卡顿为结束
+        "idle_timeout_seconds": 90,
     },
     # REST API 服务模式（可选，需 fastapi + uvicorn）。
     "server": {

@@ -16,6 +16,7 @@ from utils.cookie_utils import parse_cookie_header, sanitize_cookies
 from utils.youtube_uploader import (
     build_youtube_uploader,
     publish_latest_from_manifest,
+    publish_paths_to_youtube,
     run_youtube_auth,
     youtube_settings,
     youtube_upload_report_events,
@@ -219,6 +220,39 @@ async def upload_latest_to_youtube(
             youtube_settings(config),
             base_path,
             int(options.latest_count or 0),
+            database=database,
+        )
+        if log:
+            prefix = {"success": "", "warning": "[!] ", "info": "[i] "}
+            for level, text in youtube_upload_report_events(results):
+                log(prefix.get(level, "") + text)
+        return results
+    finally:
+        if database is not None:
+            await database.close()
+
+
+async def upload_paths_to_youtube(
+    options: YouTubeOptions,
+    paths: List[str],
+    *,
+    log: LogCallback = None,
+) -> List[Any]:
+    if not paths:
+        if log:
+            log("[i] YouTube：未选择任何文件。")
+        return []
+    config = load_config(options.config_path)
+    apply_youtube_options(config, options)
+    database = None
+    try:
+        if config.get("database"):
+            db_path = config.get("database_path", "dy_downloader.db") or "dy_downloader.db"
+            database = Database(db_path=str(db_path))
+            await database.initialize()
+        results = await publish_paths_to_youtube(
+            youtube_settings(config),
+            [Path(p) for p in paths],
             database=database,
         )
         if log:

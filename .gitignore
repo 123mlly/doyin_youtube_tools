@@ -46,6 +46,8 @@ config/cookies.json
 # YouTube OAuth (never commit real client secret or token)
 config/youtube_client_secret.json
 config/youtube_token.json
+# Google Cloud 下载的桌面客户端 JSON（常命名为 client_secret_*.apps.googleusercontent.com.json）
+config/client_secret*.json
 .omx/
 
 # Editor / IDE local settings

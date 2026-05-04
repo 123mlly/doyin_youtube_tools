@@ -18,6 +18,7 @@ from utils.validators import is_short_url, normalize_short_url
 from utils.youtube_uploader import (
     build_youtube_uploader,
     publish_latest_from_manifest,
+    publish_paths_to_youtube,
     run_youtube_auth,
     youtube_settings,
     youtube_upload_report_events,
@@ -151,6 +152,7 @@ async def main_async(args):
             or args.serve
             or getattr(args, "youtube_auth", False)
             or getattr(args, "youtube_upload_latest", None) is not None
+            or getattr(args, "youtube_upload_file", None)
         ):
             display.print_error(f"Config file not found: {config_path}")
             return
@@ -172,6 +174,9 @@ async def main_async(args):
         return
     if getattr(args, "youtube_auth", False):
         await _run_youtube_auth_subcommand(config)
+        return
+    if getattr(args, "youtube_upload_file", None):
+        await _run_youtube_upload_files_subcommand(args, config)
         return
     if getattr(args, "youtube_upload_latest", None) is not None:
         await _run_youtube_upload_latest_subcommand(args, config)
@@ -319,6 +324,7 @@ def _apply_youtube_cli_overrides(args, config: ConfigLoader) -> None:
     if (
         getattr(args, "youtube_auth", False)
         or getattr(args, "youtube_upload_latest", None) is not None
+        or getattr(args, "youtube_upload_file", None)
     ):
         overrides["enabled"] = True
     if overrides:
@@ -336,6 +342,35 @@ async def _run_youtube_auth_subcommand(config: ConfigLoader) -> None:
     display.print_success(f"YouTube authorization complete. Token saved to {token_path}")
     if token.get("refresh_token"):
         display.print_info("Refresh token received; future uploads can refresh automatically.")
+
+
+async def _run_youtube_upload_files_subcommand(args, config: ConfigLoader) -> None:
+    paths = [Path(p) for p in (getattr(args, "youtube_upload_file", None) or [])]
+    database = None
+    try:
+        if config.get("database"):
+            db_path = config.get("database_path", "dy_downloader.db") or "dy_downloader.db"
+            database = Database(db_path=str(db_path))
+            await database.initialize()
+        results = await publish_paths_to_youtube(
+            youtube_settings(config),
+            paths,
+            database=database,
+        )
+    except Exception as exc:
+        display.print_error(f"YouTube upload file(s) failed: {exc}")
+        return
+    finally:
+        if database is not None:
+            await database.close()
+
+    for level, text in youtube_upload_report_events(results):
+        if level == "success":
+            display.print_success(text)
+        elif level == "warning":
+            display.print_warning(text)
+        else:
+            display.print_info(text)
 
 
 async def _run_youtube_upload_latest_subcommand(args, config: ConfigLoader) -> None:
@@ -481,6 +516,13 @@ def main():
         default=None,
         metavar='N',
         help='从 download_manifest.jsonl 读取最近 N 条视频并上传到 YouTube',
+    )
+    parser.add_argument(
+        '--youtube-upload-file',
+        nargs='+',
+        metavar='PATH',
+        default=None,
+        help='上传指定本地视频文件到 YouTube（可多个路径）；与 manifest 无关，标题默认用文件名。若与 --youtube-upload-latest 同时出现则仅执行本项',
     )
     parser.add_argument(
         '--youtube-dry-run',

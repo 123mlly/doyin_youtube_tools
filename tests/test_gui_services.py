@@ -146,3 +146,53 @@ async def test_upload_latest_to_youtube_passes_dry_run_settings(monkeypatch, tmp
     assert captured["settings"]["privacy_status"] == "unlisted"
     assert captured["settings"]["dry_run"] is True
     assert captured["limit"] == 5
+
+
+@pytest.mark.asyncio
+async def test_upload_paths_to_youtube_passes_paths_and_settings(monkeypatch, tmp_path):
+    captured = {}
+
+    async def fake_publish(settings, paths, database=None):
+        captured["settings"] = settings
+        captured["paths"] = paths
+        captured["database"] = database
+        return [SimpleNamespace(status="dry_run")]
+
+    monkeypatch.setattr(services, "publish_paths_to_youtube", fake_publish)
+
+    results = await services.upload_paths_to_youtube(
+        YouTubeOptions(
+            config_path=str(tmp_path / "missing.yml"),
+            client_secret_path="secret.json",
+            token_path="token.json",
+            privacy_status="private",
+            latest_count=1,
+            dry_run=True,
+        ),
+        [str(tmp_path / "a.mp4"), str(tmp_path / "b.mov")],
+    )
+
+    assert results[0].status == "dry_run"
+    assert captured["settings"]["client_secret_path"] == "secret.json"
+    assert captured["settings"]["privacy_status"] == "private"
+    assert len(captured["paths"]) == 2
+    assert {p.name for p in captured["paths"]} == {"a.mp4", "b.mov"}
+
+
+@pytest.mark.asyncio
+async def test_upload_paths_to_youtube_empty_paths_no_publish(monkeypatch, tmp_path):
+    called = []
+
+    async def fake_publish(*_args, **_kwargs):
+        called.append(True)
+        return []
+
+    monkeypatch.setattr(services, "publish_paths_to_youtube", fake_publish)
+
+    results = await services.upload_paths_to_youtube(
+        YouTubeOptions(config_path=str(tmp_path / "missing.yml")),
+        [],
+    )
+
+    assert results == []
+    assert called == []

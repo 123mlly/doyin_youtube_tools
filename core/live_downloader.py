@@ -131,7 +131,15 @@ class LiveDownloader(BaseDownloader):
         live_cfg = self._live_config()
         max_duration = float(live_cfg.get("max_duration_seconds") or 0)
         chunk_size = int(live_cfg.get("chunk_size") or 65536)
-        idle_timeout = float(live_cfg.get("idle_timeout_seconds") or 30.0)
+        idle_timeout = float(live_cfg.get("idle_timeout_seconds") or 90.0)
+
+        if not is_hls:
+            logger.info(
+                "FLV 为 CDN 推流原样写入，不做转码或补帧。"
+                "播放中长黑屏/定格多为直播间本身无画面、转场或 CDN 长时间未下发视频包。"
+                "若录制常被中途截断，可增大 config 里 live.idle_timeout_seconds（当前 %.0fs）。",
+                idle_timeout,
+            )
 
         self._progress_update_step(
             "录制直播流",

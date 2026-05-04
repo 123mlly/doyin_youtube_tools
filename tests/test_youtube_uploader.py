@@ -7,8 +7,11 @@ from utils.youtube_uploader import (
     YouTubeUploadError,
     YouTubeUploadResult,
     _dedupe_manifest_batch,
+    _is_uploadable_video_file,
+    _manual_aweme_id_for_path,
     _normalize_youtube_tags,
     publish_latest_from_manifest,
+    publish_paths_to_youtube,
     youtube_upload_report_events,
 )
 
@@ -185,8 +188,8 @@ async def test_publish_latest_from_manifest_reads_recent_records(tmp_path, monke
     )
     seen = []
 
-    async def fake_upload(self, base_path_arg, record, force=False):
-        seen.append((base_path_arg, record, force))
+    async def fake_upload(self, base_path_arg, record, force=False, explicit_video=None):
+        seen.append((base_path_arg, record, force, explicit_video))
         return type("Result", (), {"status": "dry_run"})()
 
     monkeypatch.setattr(YouTubeUploader, "upload_manifest_record", fake_upload)
@@ -201,6 +204,60 @@ async def test_publish_latest_from_manifest_reads_recent_records(tmp_path, monke
     assert seen[0][0] == base_path
     assert seen[0][1]["aweme_id"] == "2"
     assert seen[0][2] is True
+    assert seen[0][3] is None
+
+
+@pytest.mark.asyncio
+async def test_publish_paths_to_youtube_calls_upload_per_path(tmp_path, monkeypatch):
+    v1 = _touch(tmp_path / "a.mp4")
+    v2 = _touch(tmp_path / "b.mov")
+    seen = []
+
+    async def fake_upload(self, base_path_arg, record, force=False, explicit_video=None):
+        seen.append((base_path_arg, record, force, explicit_video))
+        return YouTubeUploadResult(aweme_id=record.get("aweme_id", ""), status="dry_run")
+
+    monkeypatch.setattr(YouTubeUploader, "upload_manifest_record", fake_upload)
+
+    results = await publish_paths_to_youtube(
+        {"enabled": True, "dry_run": True},
+        [v1, v2],
+    )
+
+    assert len(results) == 2
+    assert len(seen) == 2
+    assert seen[0][3] == v1
+    assert seen[1][3] == v2
+
+
+@pytest.mark.asyncio
+async def test_upload_manifest_record_explicit_video_dry_run(tmp_path):
+    video = _touch(tmp_path / "clip.mkv")
+    uploader = YouTubeUploader({"enabled": True, "dry_run": True})
+    result = await uploader.upload_manifest_record(
+        tmp_path,
+        {"aweme_id": "", "media_type": "video", "desc": "", "author_name": ""},
+        force=True,
+        explicit_video=video,
+    )
+    assert result.status == "dry_run"
+    assert result.aweme_id.startswith("manual_")
+    assert result.file_path == str(video.resolve())
+
+
+def test_manual_aweme_id_stable(tmp_path):
+    p = _touch(tmp_path / "x.mp4")
+    a = _manual_aweme_id_for_path(p)
+    b = _manual_aweme_id_for_path(p)
+    assert a == b
+    assert a.startswith("manual_")
+
+
+def test_is_uploadable_video_file_suffix(tmp_path):
+    assert _is_uploadable_video_file(tmp_path / "missing.mp4") is True
+    f = _touch(tmp_path / "a.mp4")
+    assert _is_uploadable_video_file(f) is True
+    assert _is_uploadable_video_file(tmp_path / "x.txt") is False
 
 
 def test_youtube_uploader_missing_dependencies_message(monkeypatch, tmp_path):

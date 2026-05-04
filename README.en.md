@@ -2,7 +2,7 @@
 
 **中文说明（仓库首页默认）：** [README.md](./README.md) — English documentation follows.
 
-A versatile **Douyin (TikTok China) downloader with optional YouTube upload support**: batch-download videos, image-notes, music, collections, and creator profiles, then **upload eligible MP4s to YouTube** via OAuth and the resumable Data API (install the `[youtube]` extra and run `douyin-dl --youtube-auth`). Core features include real-time progress, automatic retries, SQLite deduplication, integrity checks, and browser fallback for login and anti-bot handling. Use CLI flags (`--youtube-*`), the desktop GUI, or set `youtube_upload.enabled: true` plus `youtube_upload.auto_after_download: true` in `config.yml` to **auto-upload each new video** after download (with valid `client_secret_path` / `token_path`).
+A versatile **Douyin (TikTok China) downloader with optional YouTube upload support**: batch-download videos, image-notes, music, collections, and creator profiles, then **upload eligible MP4s to YouTube** via OAuth and the resumable Data API (install the `[youtube]` extra and run `douyin-dl --youtube-auth`). You can also upload **arbitrary local video files** with **`--youtube-upload-file`** (no manifest entry required). Core features include real-time progress, automatic retries, SQLite deduplication, integrity checks, and browser fallback for login and anti-bot handling. Use CLI flags (`--youtube-*`), the desktop GUI, or set `youtube_upload.enabled: true` plus `youtube_upload.auto_after_download: true` in `config.yml` to **auto-upload each new video** after download (with valid `client_secret_path` / `token_path`).
 
 ### Supported
 
@@ -21,8 +21,8 @@ A versatile **Douyin (TikTok China) downloader with optional YouTube upload supp
 | **Comments collection** | Per-aweme comments (+ optional replies) saved as `*_comments.json` |
 | **Hot search + keyword search** | `--hot-board [N]` / `--search "keyword"` dumps to JSONL |
 | **REST API server mode** | `--serve --serve-port 8000` (optional `fastapi + uvicorn`) |
-| **Desktop GUI** | Optional PySide6 app: `douyin-dl-gui` (download, cookies, YouTube, settings, logs) |
-| **YouTube upload (supported, optional)** | OAuth + resumable upload to YouTube from `download_manifest.jsonl`; CLI `--youtube-*` or GUI; **auto-upload** each new video when `youtube_upload.enabled` and `youtube_upload.auto_after_download` are true |
+| **Desktop GUI** | Optional PySide6 app: `douyin-dl-gui` (download, cookies, YouTube manifest + local file upload, settings, logs) |
+| **YouTube upload (supported, optional)** | OAuth + resumable upload from `download_manifest.jsonl` **or paths passed to `--youtube-upload-file`**; CLI `--youtube-*` or GUI; **auto-upload** each new video when `youtube_upload.enabled` and `youtube_upload.auto_after_download` are true |
 | **Notification push** | Bark / Telegram / Webhook on download completion |
 | Extra assets | Cover, music, avatar, JSON metadata |
 | Video transcription | Optional, using OpenAI Transcriptions API |
@@ -121,7 +121,7 @@ douyin-dl-gui
   <img src="./img/SCR-20260503-qxvy.png" alt="Douyin Downloader desktop GUI" width="920" />
 </p>
 
-The GUI drives the same core as the CLI: multi-link download, cookie status + paste-to-save, YouTube auth/upload against `download_manifest.jsonl`, common settings (database, proxy, quiet logs), and a live log view. On macOS / Windows it can open a terminal to run `python -m tools.cookie_fetcher` (see Cookie tab).
+The GUI drives the same core as the CLI: multi-link download, cookie status + paste-to-save, YouTube auth, **Upload latest** (manifest) plus **Upload local files…** (same as `--youtube-upload-file`), common settings (database, proxy, quiet logs), and a live log view. On macOS / Windows it can open a terminal to run `python -m tools.cookie_fetcher` (see Cookie tab).
 
 ### 7) Packaged GUI (macOS / Windows, PyInstaller)
 
@@ -230,6 +230,7 @@ douyin-dl -c config.yml \
 | `--serve-port PORT` | REST server listen port (default 8000) |
 | `--youtube-auth` | Run Google OAuth for YouTube upload; saves token (needs `[youtube]` deps + `youtube_upload` in config) |
 | `--youtube-upload-latest [N]` | Upload latest `N` manifest records (default `N=1` when flag is present without value); `0` = all lines in manifest |
+| `--youtube-upload-file PATH [PATH ...]` | Upload specific local video file(s); does not read the manifest; title defaults from the filename (still uses `title_template` etc.). If combined with `--youtube-upload-latest`, **only this action runs** |
 | `--youtube-dry-run` | Plan uploads only; no YouTube API upload calls |
 | `--version` | Show version number |
 
@@ -329,7 +330,7 @@ link:
 live:
   max_duration_seconds: 3600   # 0 = record until broadcaster ends
   chunk_size: 65536
-  idle_timeout_seconds: 30
+  idle_timeout_seconds: 90   # end recording after this many seconds with no new stream data (keeps partial); too low may stop on CDN stalls
 ```
 
 The recorder saves an FLV file under `Downloaded/{author}/live/` plus a `*_room.json`
@@ -383,7 +384,7 @@ Finished jobs are pruned by TTL (default 24h) and max-jobs (default 500) — in-
 
 ## Optional: YouTube upload
 
-Uploads **primary MP4** entries referenced in `Downloaded/download_manifest.jsonl` (same base path as `path` in config). Duplicate `aweme_id` rows are skipped when `database: true` and history exists.
+**Manifest mode** uploads **primary MP4** entries referenced in `Downloaded/download_manifest.jsonl` (same base path as `path` in config). **Arbitrary files:** use `--youtube-upload-file` (step 6 below); no manifest line is required. When `database: true`, duplicates are skipped by `aweme_id` or a stable internal id for manual file uploads.
 
 1. **Install Google client libraries** (included in full `requirements.txt`, or `pip install -e ".[youtube]"`).
 2. **Google Cloud**: enable **YouTube Data API v3**, create **OAuth Desktop** credentials, download the JSON client secret.
@@ -401,7 +402,14 @@ Uploads **primary MP4** entries referenced in `Downloaded/download_manifest.json
    douyin-dl --youtube-upload-latest 3 --youtube-dry-run   # plan only, no API upload
    ```
 
-Use `youtube_upload.auto_after_download: false` (default) if you **do not** want uploads during normal download runs; use the CLI flags or GUI YouTube tab for on-demand uploads.
+6. **Upload specific local files** (paths do not need to appear in `download_manifest.jsonl`; common extensions such as `.mp4`, `.mov`, `.mkv`, `.webm`, `.flv`, etc.):
+
+   ```bash
+   douyin-dl --youtube-upload-file ./my_video.mp4
+   douyin-dl -c config.yml --youtube-upload-file ./a.mp4 /path/b.mov --youtube-dry-run
+   ```
+
+Use `youtube_upload.auto_after_download: false` (default) if you **do not** want uploads during normal download runs; use the CLI flags or the GUI YouTube tab (**Upload latest** from manifest, or **Upload local files…** for arbitrary paths — same as `--youtube-upload-file`).
 
 ### Send a notification on completion
 

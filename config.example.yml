@@ -70,7 +70,7 @@ comments:
 live:
   max_duration_seconds: 0   # 0 = 录到主播下播
   chunk_size: 65536
-  idle_timeout_seconds: 30
+  idle_timeout_seconds: 90   # 拉流无新数据超过该秒数则结束（保留已录）；过小易误判卡顿
 
 # 下载完成通知（可选）。providers 支持 bark / telegram / webhook
 notifications:

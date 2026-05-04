@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import random
 import re
@@ -24,6 +25,21 @@ VALID_PRIVACY_STATUSES = {"public", "private", "unlisted"}
 YOUTUBE_MAX_TAGS = 30
 YOUTUBE_MAX_TAG_LEN = 30
 YOUTUBE_MAX_DESCRIPTION_CHARS = 5000
+
+# 本地指定文件上传（非 manifest）时允许的后缀；manifest 内仍只选主 .mp4
+_UPLOADABLE_VIDEO_SUFFIXES = frozenset(
+    {".mp4", ".mov", ".mkv", ".webm", ".flv", ".m4v", ".avi", ".mpeg", ".mpg"}
+)
+
+
+def _manual_aweme_id_for_path(video_path: Path) -> str:
+    """Stable id for DB dedupe when uploading arbitrary files (no manifest aweme_id)."""
+    key = str(video_path.resolve()).encode("utf-8", errors="surrogatepass")
+    return "manual_" + hashlib.sha256(key).hexdigest()[:24]
+
+
+def _is_uploadable_video_file(path: Path) -> bool:
+    return path.suffix.lower() in _UPLOADABLE_VIDEO_SUFFIXES
 
 
 def _suppress_google_future_warnings() -> None:
@@ -189,8 +205,41 @@ class YouTubeUploader:
         record: Dict[str, Any],
         *,
         force: bool = False,
+        explicit_video: Optional[Path] = None,
     ) -> YouTubeUploadResult:
-        aweme_id = str(record.get("aweme_id") or "")
+        record = dict(record)
+        video_path: Optional[Path] = None
+        if explicit_video is not None:
+            try:
+                resolved = Path(explicit_video).expanduser().resolve(strict=False)
+            except OSError:
+                return YouTubeUploadResult(
+                    aweme_id="",
+                    status="skipped",
+                    error_message=f"cannot resolve path: {explicit_video}",
+                )
+            if not resolved.is_file():
+                return YouTubeUploadResult(
+                    aweme_id="",
+                    status="skipped",
+                    error_message=f"video file not found: {resolved}",
+                )
+            if not _is_uploadable_video_file(resolved):
+                return YouTubeUploadResult(
+                    aweme_id="",
+                    status="skipped",
+                    error_message=(
+                        f"unsupported video type {resolved.suffix!r} "
+                        f"(allowed: {', '.join(sorted(_UPLOADABLE_VIDEO_SUFFIXES))})"
+                    ),
+                )
+            video_path = resolved
+            if not str(record.get("desc") or "").strip():
+                record["desc"] = resolved.stem
+            if not str(record.get("aweme_id") or "").strip():
+                record["aweme_id"] = _manual_aweme_id_for_path(resolved)
+
+        aweme_id = str(record.get("aweme_id") or "").strip()
         if not aweme_id:
             return YouTubeUploadResult(
                 aweme_id="", status="skipped", error_message="missing aweme_id"
@@ -208,7 +257,8 @@ class YouTubeUploader:
                 error_message="already uploaded (success in database)",
             )
 
-        video_path = self.select_video_path(base_path, record)
+        if video_path is None:
+            video_path = self.select_video_path(base_path, record)
         if video_path is None:
             return YouTubeUploadResult(
                 aweme_id=aweme_id,
@@ -386,6 +436,36 @@ async def publish_latest_from_manifest(
         if max_items and len(results) >= max_items:
             break
         results.append(await uploader.upload_manifest_record(base_path, record, force=True))
+    return results
+
+
+async def publish_paths_to_youtube(
+    settings: Dict[str, Any],
+    paths: List[Path],
+    database: Any = None,
+) -> List[YouTubeUploadResult]:
+    """Upload local video files (not tied to download_manifest.jsonl)."""
+    _suppress_google_future_warnings()
+    uploader = YouTubeUploader({**settings, "enabled": True}, database=database)
+    results: List[YouTubeUploadResult] = []
+    dummy_base = Path(".")
+    max_items = int(settings.get("max_items_per_run") or 0)
+    for raw in paths:
+        if max_items and len(results) >= max_items:
+            break
+        rec: Dict[str, Any] = {
+            "aweme_id": "",
+            "media_type": "video",
+            "desc": "",
+            "author_name": "",
+            "date": "",
+            "file_paths": [],
+        }
+        results.append(
+            await uploader.upload_manifest_record(
+                dummy_base, rec, force=True, explicit_video=Path(raw)
+            )
+        )
     return results
 
 

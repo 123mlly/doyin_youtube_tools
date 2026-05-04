@@ -277,7 +277,15 @@ class MainWindow(QMainWindow):
         upload_form.addRow("", self.youtube_dry_run_check)
         upload_form.addRow(
             "",
-            self._hint("N 为 0 表示处理清单中的全部记录；数据来源为保存目录下的 download_manifest.jsonl。"),
+            self._hint(
+                "「上传最近视频」：N 为 0 表示处理清单全部行；数据来自保存目录下的 download_manifest.jsonl。"
+            ),
+        )
+        upload_form.addRow(
+            "",
+            self._hint(
+                "「上传本地文件…」：可多选磁盘上的视频，与清单无关，对应 CLI `--youtube-upload-file`。"
+            ),
         )
         upload_form.addRow(
             "",
@@ -301,8 +309,13 @@ class MainWindow(QMainWindow):
         upload_btn.setMinimumHeight(40)
         upload_btn.setCursor(Qt.PointingHandCursor)
         upload_btn.clicked.connect(self._start_youtube_upload)
+        files_btn = QPushButton("上传本地文件…")
+        files_btn.setMinimumHeight(40)
+        files_btn.setCursor(Qt.PointingHandCursor)
+        files_btn.clicked.connect(self._start_youtube_upload_files)
         row.addWidget(auth_btn, 1)
         row.addWidget(upload_btn, 1)
+        row.addWidget(files_btn, 1)
         root.addLayout(row)
         root.addStretch(1)
         self.tabs.addTab(tab, "YouTube")
@@ -592,9 +605,30 @@ class MainWindow(QMainWindow):
         if self._youtube_upload_worker and self._youtube_upload_worker.isRunning():
             self._message("YouTube 上传正在运行")
             return
-        self._append_log("开始 YouTube 上传")
+        self._append_log("开始 YouTube 上传（清单最近 N 条）")
         self._set_status("YouTube 上传进行中…")
         worker = YouTubeUploadWorker(self._youtube_options())
+        worker.log_message.connect(self._append_log)
+        worker.upload_finished.connect(self._youtube_upload_finished)
+        worker.failed.connect(self._task_failed)
+        self._youtube_upload_worker = worker
+        worker.start()
+
+    def _start_youtube_upload_files(self) -> None:
+        if self._youtube_upload_worker and self._youtube_upload_worker.isRunning():
+            self._message("YouTube 上传正在运行")
+            return
+        paths, _sel = QFileDialog.getOpenFileNames(
+            self,
+            "选择要上传的视频文件",
+            str(Path.home()),
+            "Video (*.mp4 *.mov *.mkv *.webm *.flv *.m4v *.avi *.mpeg *.mpg);;All files (*)",
+        )
+        if not paths:
+            return
+        self._append_log(f"开始 YouTube 上传（本地文件 {len(paths)} 个）")
+        self._set_status("YouTube 上传进行中…")
+        worker = YouTubeUploadWorker(self._youtube_options(), file_paths=list(paths))
         worker.log_message.connect(self._append_log)
         worker.upload_finished.connect(self._youtube_upload_finished)
         worker.failed.connect(self._task_failed)

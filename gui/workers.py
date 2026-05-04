@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Callable
+from typing import Callable, List, Optional
 
 from PySide6.QtCore import QThread, Signal
 
@@ -12,6 +12,7 @@ from gui.services import (
     run_downloads,
     run_youtube_authorization,
     upload_latest_to_youtube,
+    upload_paths_to_youtube,
 )
 
 
@@ -82,15 +83,21 @@ class YouTubeAuthWorker(_BaseWorker):
 class YouTubeUploadWorker(_BaseWorker):
     upload_finished = Signal(int, int, int, int)
 
-    def __init__(self, options: YouTubeOptions):
+    def __init__(self, options: YouTubeOptions, file_paths: Optional[List[str]] = None):
         super().__init__()
         self.options = options
+        self.file_paths = file_paths or []
 
     def run(self) -> None:
         self._run_guarded(self._run)
 
     def _run(self) -> None:
-        results = asyncio.run(upload_latest_to_youtube(self.options, log=self._log))
+        if self.file_paths:
+            results = asyncio.run(
+                upload_paths_to_youtube(self.options, self.file_paths, log=self._log)
+            )
+        else:
+            results = asyncio.run(upload_latest_to_youtube(self.options, log=self._log))
         success = sum(1 for result in results if result.status == "success")
         dry_run = sum(1 for result in results if result.status == "dry_run")
         skipped = sum(1 for result in results if result.status == "skipped")
