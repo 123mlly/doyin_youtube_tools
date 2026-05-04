@@ -1,6 +1,8 @@
 from pathlib import Path
+from unittest.mock import MagicMock
 
 import pytest
+from googleapiclient.errors import ResumableUploadError
 
 from utils.youtube_uploader import (
     YouTubeUploader,
@@ -9,6 +11,7 @@ from utils.youtube_uploader import (
     _dedupe_manifest_batch,
     _is_uploadable_video_file,
     _manual_aweme_id_for_path,
+    _format_upload_exception,
     _normalize_youtube_tags,
     publish_latest_from_manifest,
     publish_paths_to_youtube,
@@ -96,12 +99,40 @@ def test_youtube_uploader_builds_metadata_from_templates():
     assert metadata["tags"] == ["douyin", "shorts", "extra"]
 
 
+def test_format_upload_exception_resumable_upload_error_is_http_error_subclass():
+    """ResumableUploadError subclasses HttpError; formatting must not collapse to empty."""
+    resp = MagicMock()
+    resp.status = 403
+    resp.reason = "Forbidden"
+    content = (
+        b'{"error":{"message":"Quota exceeded","errors":['
+        b'{"domain":"youtube.quota","reason":"quotaExceeded","message":"Quota exceeded"}'
+        b"]}}"
+    )
+    exc = ResumableUploadError(resp, content)
+    text = _format_upload_exception(exc)
+    assert "quotaExceeded" in text or "配额" in text
+
+
 def test_normalize_youtube_tags_caps_count_and_length():
     many = [f"t{i}" for i in range(50)]
     merged = _normalize_youtube_tags(["a" * 40], many)
     assert len(merged) == 30
     assert all(len(t) <= 30 for t in merged)
     assert merged[0] == "a" * 30
+
+
+def test_youtube_upload_report_events_upload_limit_hint():
+    results = [
+        YouTubeUploadResult(
+            aweme_id="1",
+            status="failure",
+            error_message="HTTP 400 | uploadLimitExceeded: too many",
+        ),
+    ]
+    texts = [e[1] for e in youtube_upload_report_events(results)]
+    assert any("uploadLimitExceeded" in t for t in texts)
+    assert not any("若出现 quotaExceeded" in t for t in texts)
 
 
 def test_youtube_upload_report_events_groups_failures():

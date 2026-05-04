@@ -123,14 +123,27 @@ def youtube_upload_report_events(
                 )
             events.append(("info", " ".join(parts)))
     if failed and not success:
-        events.append(
-            (
-                "info",
-                "若出现 quotaExceeded，为当日 YouTube Data API 配额用尽，通常次日恢复；"
-                "详见 https://developers.google.com/youtube/v3/getting-started#quota 。"
-                " CLI 可加 -v 查看详细日志。",
-            )
+        fail_text = " ".join(
+            (r.error_message or "") for r in results if r.status == "failure"
         )
+        if "quotaExceeded" in fail_text or "youtube.quota" in fail_text:
+            events.append(
+                (
+                    "info",
+                    "若出现 quotaExceeded：为当日 YouTube Data API 配额用尽，通常次日恢复；"
+                    "详见 https://developers.google.com/youtube/v3/getting-started#quota 。"
+                    " CLI 可加 -v 查看详细日志。",
+                )
+            )
+        if "uploadLimitExceeded" in fail_text:
+            events.append(
+                (
+                    "info",
+                    "若出现 uploadLimitExceeded：为 YouTube 对频道「可上传视频数量」等产品限制，"
+                    "与 Google Cloud 里 Data API 的每日配额不是同一回事；请到 YouTube 工作室检查账号状态、"
+                    "是否需手机验证，或等待限制解除后再传。",
+                )
+            )
     return events
 
 
@@ -636,7 +649,11 @@ def _strip_html(text: str) -> str:
 
 
 def _unwrap_google_http_error(exc: BaseException) -> Optional[Any]:
-    """ResumableUploadError etc. often wrap googleapiclient.errors.HttpError."""
+    """Find googleapiclient HttpError (including ResumableUploadError subclass) in chain."""
+    try:
+        from googleapiclient.errors import HttpError as GoogleHttpError
+    except ImportError:
+        return None
     stack: List[BaseException] = [exc]
     visited: set[int] = set()
     while stack:
@@ -647,9 +664,7 @@ def _unwrap_google_http_error(exc: BaseException) -> Optional[Any]:
         if cid in visited:
             continue
         visited.add(cid)
-        mod = getattr(type(cur), "__module__", "") or ""
-        name = type(cur).__name__
-        if name == "HttpError" and "googleapiclient" in mod:
+        if isinstance(cur, GoogleHttpError):
             return cur
         cause = getattr(cur, "__cause__", None)
         if isinstance(cause, BaseException) and id(cause) not in visited:
@@ -669,6 +684,13 @@ def _unwrap_google_http_error(exc: BaseException) -> Optional[Any]:
 
 def _format_upload_exception(exc: BaseException) -> str:
     """Readable API / transport errors for logs and CLI."""
+    try:
+        from googleapiclient.errors import HttpError as GoogleHttpError
+    except ImportError:
+        GoogleHttpError = ()  # type: ignore[misc,assignment]
+
+    if GoogleHttpError and isinstance(exc, GoogleHttpError):
+        return _format_google_http_error(exc)
     http = _unwrap_google_http_error(exc)
     if http is not None:
         return _format_google_http_error(http)
@@ -723,6 +745,12 @@ def _format_google_http_error(exc: Any) -> str:
             "HTTP 403 | quotaExceeded: YouTube Data API 上传/写入配额已用完"
             "（默认按天重置，见 https://developers.google.com/youtube/v3/getting-started#quota ）"
         )
+    if "uploadLimitExceeded" in joined.casefold():
+        suffix = (
+            " ［说明：此为频道可上传视频数等产品限制，非 Cloud Console 里 Data API 的 Queries/day。］"
+        )
+        if len(joined) + len(suffix) <= 450:
+            return joined + suffix
     if len(joined) > 400:
         return joined[:397] + "..."
     return joined
