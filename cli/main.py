@@ -16,7 +16,9 @@ from utils.logger import set_console_log_level, setup_logger
 from utils.notifier import build_notifier
 from utils.validators import is_short_url, normalize_short_url
 from utils.youtube_uploader import (
+    YouTubeUploadError,
     build_youtube_uploader,
+    collect_uploadable_videos_in_directory,
     publish_latest_from_manifest,
     publish_paths_to_youtube,
     run_youtube_auth,
@@ -153,6 +155,7 @@ async def main_async(args):
             or getattr(args, "youtube_auth", False)
             or getattr(args, "youtube_upload_latest", None) is not None
             or getattr(args, "youtube_upload_file", None)
+            or getattr(args, "youtube_upload_dir", None)
         ):
             display.print_error(f"Config file not found: {config_path}")
             return
@@ -177,6 +180,9 @@ async def main_async(args):
         return
     if getattr(args, "youtube_upload_file", None):
         await _run_youtube_upload_files_subcommand(args, config)
+        return
+    if getattr(args, "youtube_upload_dir", None):
+        await _run_youtube_upload_dir_subcommand(args, config)
         return
     if getattr(args, "youtube_upload_latest", None) is not None:
         await _run_youtube_upload_latest_subcommand(args, config)
@@ -325,6 +331,7 @@ def _apply_youtube_cli_overrides(args, config: ConfigLoader) -> None:
         getattr(args, "youtube_auth", False)
         or getattr(args, "youtube_upload_latest", None) is not None
         or getattr(args, "youtube_upload_file", None)
+        or getattr(args, "youtube_upload_dir", None)
     ):
         overrides["enabled"] = True
     if overrides:
@@ -342,6 +349,49 @@ async def _run_youtube_auth_subcommand(config: ConfigLoader) -> None:
     display.print_success(f"YouTube authorization complete. Token saved to {token_path}")
     if token.get("refresh_token"):
         display.print_info("Refresh token received; future uploads can refresh automatically.")
+
+
+async def _run_youtube_upload_dir_subcommand(args, config: ConfigLoader) -> None:
+    raw_dir = getattr(args, "youtube_upload_dir", None)
+    if not raw_dir:
+        return
+    recursive = bool(getattr(args, "youtube_upload_dir_recursive", False))
+    try:
+        paths = collect_uploadable_videos_in_directory(raw_dir, recursive=recursive)
+    except YouTubeUploadError as exc:
+        display.print_error(str(exc))
+        return
+    if not paths:
+        display.print_info("目录中未找到可上传的视频文件。")
+        return
+    scope_note = "（含子文件夹）" if recursive else ""
+    display.print_info(f"准备上传 {len(paths)} 个视频{scope_note}。")
+
+    database = None
+    try:
+        if config.get("database"):
+            db_path = config.get("database_path", "dy_downloader.db") or "dy_downloader.db"
+            database = Database(db_path=str(db_path))
+            await database.initialize()
+        results = await publish_paths_to_youtube(
+            youtube_settings(config),
+            paths,
+            database=database,
+        )
+    except Exception as exc:
+        display.print_error(f"YouTube upload directory failed: {exc}")
+        return
+    finally:
+        if database is not None:
+            await database.close()
+
+    for level, text in youtube_upload_report_events(results):
+        if level == "success":
+            display.print_success(text)
+        elif level == "warning":
+            display.print_warning(text)
+        else:
+            display.print_info(text)
 
 
 async def _run_youtube_upload_files_subcommand(args, config: ConfigLoader) -> None:
@@ -522,7 +572,19 @@ def main():
         nargs='+',
         metavar='PATH',
         default=None,
-        help='上传指定本地视频文件到 YouTube（可多个路径）；与 manifest 无关，标题默认用文件名。若与 --youtube-upload-latest 同时出现则仅执行本项',
+        help='上传指定本地视频文件到 YouTube（可多个路径）；与 manifest 无关，标题默认用文件名。若与本项以外的上传类参数同时出现，优先级：本项 > --youtube-upload-dir > --youtube-upload-latest',
+    )
+    parser.add_argument(
+        '--youtube-upload-dir',
+        type=str,
+        default=None,
+        metavar='DIR',
+        help='扫描目录内的视频并上传到 YouTube（仅一层；与 manifest 无关）。若指定 --youtube-upload-dir-recursive 则包含子文件夹',
+    )
+    parser.add_argument(
+        '--youtube-upload-dir-recursive',
+        action='store_true',
+        help='与 --youtube-upload-dir 联用：递归扫描子目录中的视频',
     )
     parser.add_argument(
         '--youtube-dry-run',

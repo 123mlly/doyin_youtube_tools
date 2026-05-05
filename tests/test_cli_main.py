@@ -153,3 +153,19 @@ def test_youtube_cli_overrides_enable_for_upload_file():
 
     youtube_upload = config.get("youtube_upload", {})
     assert youtube_upload["enabled"] is True
+
+
+def test_youtube_cli_overrides_enable_for_upload_dir():
+    config = main_module.ConfigLoader()
+    args = SimpleNamespace(
+        youtube_auth=False,
+        youtube_upload_latest=None,
+        youtube_upload_file=None,
+        youtube_upload_dir="/tmp/videos",
+        youtube_dry_run=False,
+    )
+
+    main_module._apply_youtube_cli_overrides(args, config)
+
+    youtube_upload = config.get("youtube_upload", {})
+    assert youtube_upload["enabled"] is True

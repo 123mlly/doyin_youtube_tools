@@ -39,6 +39,10 @@ from gui.services import (
     summarize_cookie_status,
 )
 from gui.workers import DownloadWorker, YouTubeAuthWorker, YouTubeUploadWorker
+from utils.youtube_uploader import (
+    YouTubeUploadError,
+    collect_uploadable_videos_in_directory,
+)
 
 
 class MainWindow(QMainWindow):
@@ -271,10 +275,14 @@ class MainWindow(QMainWindow):
         self.youtube_latest_spin.setFixedWidth(120)
         self.youtube_dry_run_check = QCheckBox("Dry run（只预览，不调用上传 API）")
         self.youtube_dry_run_check.setChecked(True)
+        self.youtube_upload_dir_recursive_check = QCheckBox(
+            "上传目录时包含子文件夹"
+        )
 
         upload_form.addRow("可见性", self.youtube_privacy_combo)
         upload_form.addRow("最近 N 条", self.youtube_latest_spin)
         upload_form.addRow("", self.youtube_dry_run_check)
+        upload_form.addRow("", self.youtube_upload_dir_recursive_check)
         upload_form.addRow(
             "",
             self._hint(
@@ -290,8 +298,15 @@ class MainWindow(QMainWindow):
         upload_form.addRow(
             "",
             self._hint(
-                "批量上传会消耗 YouTube Data API 配额；若失败多为 quotaExceeded，请减少 N 或次日再传。"
-                " 上传结束后日志区会显示与命令行一致的分组说明。"
+                "「上传目录…」：扫描所选文件夹内的视频（可选子文件夹），对应 CLI `--youtube-upload-dir`。"
+            ),
+        )
+        upload_form.addRow(
+            "",
+            self._hint(
+                "失败常见两类（不同）：① quotaExceeded / Data API 配额——与 Google Cloud「Queries/day」相关，"
+                "通常次日恢复；② uploadLimitExceeded——YouTube 对频道「可上传视频数」等产品限制，"
+                "需在 YouTube 工作室处理验证或等待解除。上传后请在「日志」页查看与 CLI 一致的分组说明。"
             ),
         )
 
@@ -309,14 +324,23 @@ class MainWindow(QMainWindow):
         upload_btn.setMinimumHeight(40)
         upload_btn.setCursor(Qt.PointingHandCursor)
         upload_btn.clicked.connect(self._start_youtube_upload)
+        row.addWidget(auth_btn, 1)
+        row.addWidget(upload_btn, 1)
+        root.addLayout(row)
+
+        row_files = QHBoxLayout()
+        row_files.setSpacing(10)
         files_btn = QPushButton("上传本地文件…")
         files_btn.setMinimumHeight(40)
         files_btn.setCursor(Qt.PointingHandCursor)
         files_btn.clicked.connect(self._start_youtube_upload_files)
-        row.addWidget(auth_btn, 1)
-        row.addWidget(upload_btn, 1)
-        row.addWidget(files_btn, 1)
-        root.addLayout(row)
+        dir_btn = QPushButton("上传目录…")
+        dir_btn.setMinimumHeight(40)
+        dir_btn.setCursor(Qt.PointingHandCursor)
+        dir_btn.clicked.connect(self._start_youtube_upload_dir)
+        row_files.addWidget(files_btn, 1)
+        row_files.addWidget(dir_btn, 1)
+        root.addLayout(row_files)
         root.addStretch(1)
         self.tabs.addTab(tab, "YouTube")
 
@@ -635,6 +659,37 @@ class MainWindow(QMainWindow):
         self._youtube_upload_worker = worker
         worker.start()
 
+    def _start_youtube_upload_dir(self) -> None:
+        if self._youtube_upload_worker and self._youtube_upload_worker.isRunning():
+            self._message("YouTube 上传正在运行")
+            return
+        directory = QFileDialog.getExistingDirectory(
+            self, "选择包含视频的文件夹", str(Path.home())
+        )
+        if not directory:
+            return
+        try:
+            paths = collect_uploadable_videos_in_directory(
+                directory,
+                recursive=self.youtube_upload_dir_recursive_check.isChecked(),
+            )
+        except YouTubeUploadError as exc:
+            self._message(str(exc))
+            return
+        if not paths:
+            self._message("该目录下未找到可上传的视频文件。")
+            return
+        self._append_log(f"开始 YouTube 上传（目录 {len(paths)} 个视频）")
+        self._set_status("YouTube 上传进行中…")
+        worker = YouTubeUploadWorker(
+            self._youtube_options(), file_paths=[str(p) for p in paths]
+        )
+        worker.log_message.connect(self._append_log)
+        worker.upload_finished.connect(self._youtube_upload_finished)
+        worker.failed.connect(self._task_failed)
+        self._youtube_upload_worker = worker
+        worker.start()
+
     def _youtube_upload_finished(
         self, success: int, dry_run: int, skipped: int, failed: int
     ) -> None:
@@ -645,6 +700,10 @@ class MainWindow(QMainWindow):
         else:
             self._set_status(
                 f"YouTube 已结束（成功 {success}，预演 {dry_run}，跳过 {skipped}）"
+            )
+        if failed > 0:
+            self._append_log(
+                "[i] 失败明细与 ℹ 说明在上文：quotaExceeded 为 API 配额；uploadLimitExceeded 为频道上传条数限制（非同一回事）。"
             )
 
     def _on_youtube_authorized(self, path: str) -> None:

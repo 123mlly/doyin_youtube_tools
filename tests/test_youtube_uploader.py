@@ -11,6 +11,7 @@ from utils.youtube_uploader import (
     _dedupe_manifest_batch,
     _is_uploadable_video_file,
     _manual_aweme_id_for_path,
+    collect_uploadable_videos_in_directory,
     _format_upload_exception,
     _normalize_youtube_tags,
     publish_latest_from_manifest,
@@ -35,6 +36,32 @@ def _touch(path: Path) -> Path:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(b"data")
     return path
+
+
+def test_collect_uploadable_videos_in_directory_top_level_only(tmp_path):
+    (tmp_path / "a.mp4").write_bytes(b"1")
+    (tmp_path / "b.MP4").write_bytes(b"2")
+    (tmp_path / "note.txt").write_text("x", encoding="utf-8")
+    (tmp_path / "sub").mkdir()
+    (tmp_path / "sub" / "c.mp4").write_bytes(b"3")
+    found = collect_uploadable_videos_in_directory(tmp_path, recursive=False)
+    assert [p.name for p in found] == ["a.mp4", "b.MP4"]
+
+
+def test_collect_uploadable_videos_in_directory_recursive(tmp_path):
+    (tmp_path / "a.mp4").write_bytes(b"1")
+    sub = tmp_path / "nested"
+    sub.mkdir()
+    (sub / "b.mov").write_bytes(b"2")
+    found = collect_uploadable_videos_in_directory(tmp_path, recursive=True)
+    assert {p.name for p in found} == {"a.mp4", "b.mov"}
+
+
+def test_collect_uploadable_videos_in_directory_not_a_dir(tmp_path):
+    f = tmp_path / "x.txt"
+    f.write_text("y", encoding="utf-8")
+    with pytest.raises(YouTubeUploadError, match="Not a directory"):
+        collect_uploadable_videos_in_directory(f)
 
 
 def test_youtube_uploader_selects_primary_video(tmp_path):

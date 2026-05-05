@@ -42,6 +42,31 @@ def _is_uploadable_video_file(path: Path) -> bool:
     return path.suffix.lower() in _UPLOADABLE_VIDEO_SUFFIXES
 
 
+def collect_uploadable_videos_in_directory(
+    directory: Path | str,
+    *,
+    recursive: bool = False,
+) -> List[Path]:
+    """List supported video files under ``directory`` (sorted by path).
+
+    When ``recursive`` is False, only immediate children are scanned.
+    """
+    root = Path(directory).expanduser().resolve()
+    if not root.is_dir():
+        raise YouTubeUploadError(f"Not a directory: {root}")
+    found: List[Path] = []
+    if recursive:
+        for candidate in root.rglob("*"):
+            if candidate.is_file() and _is_uploadable_video_file(candidate):
+                found.append(candidate)
+    else:
+        for candidate in root.iterdir():
+            if candidate.is_file() and _is_uploadable_video_file(candidate):
+                found.append(candidate)
+    found.sort(key=lambda p: str(p).lower())
+    return found
+
+
 def _suppress_google_future_warnings() -> None:
     warnings.filterwarnings(
         "ignore",
