@@ -2,7 +2,7 @@
 
 本文件为 **GitHub / PyPI 等默认展示的中文说明**。需要英文请阅读 [README.en.md](./README.en.md)。
 
-**兼具抖音（TikTok 中国区）批量下载与可选 YouTube 上传**：可批量下载视频、图文、音乐、合集与用户主页；在安装 `[youtube]` 依赖并完成 `douyin-dl --youtube-auth` 后，可将 `download_manifest.jsonl` 中的主 **MP4** 通过 OAuth、按 **YouTube Data API 可断点续传** 上传至 YouTube；也可用 **`--youtube-upload-file`** 上传**任意本地视频文件**（与清单无关）。核心能力包括实时进度、自动重试、SQLite 去重、完整性校验，以及登录与反爬场景下的浏览器兜底。
+**兼具抖音（TikTok 中国区）批量下载与可选 YouTube 上传**：可批量下载视频、图文、音乐、合集与用户主页；在安装 `[youtube]` 依赖并完成 `douyin-dl --youtube-auth` 后，可将 `download_manifest.jsonl` 中的主 **MP4** 通过 OAuth、按 **YouTube Data API 可断点续传** 上传至 YouTube；也可用 **`--youtube-upload-file`** 上传**任意本地视频文件**，或用 **`--youtube-upload-dir`** **扫描目录内视频**批量上传（均与清单无关）。核心能力包括实时进度、自动重试、SQLite 去重、完整性校验，以及登录与反爬场景下的浏览器兜底。
 
 使用 CLI（`--youtube-*`）、桌面 GUI，或在 `config.yml` 中设置 `youtube_upload.enabled: true` 且 `youtube_upload.auto_after_download: true`，可在**每条新视频下载成功后自动上传**（需有效的 `client_secret_path` / `token_path`）。与 `config.example.yml` 一致，**YouTube 上传相关项默认关闭**（`enabled`、`auto_after_download` 等为 `false`），需要时再改为 `true`。
 
@@ -23,8 +23,8 @@
 | **评论采集** | 按作品抓评论（可含二级回复），输出 `*_comments.json` |
 | **热搜榜 + 关键词搜索** | `--hot-board [N]` / `--search "关键词"`，结果落 JSONL |
 | **REST API 服务模式** | `--serve --serve-port 8000`（可选 `fastapi + uvicorn`） |
-| **桌面 GUI** | 可选 PySide6：`douyin-dl-gui`（下载、Cookie、YouTube 清单/本地文件上传、设置、日志） |
-| **YouTube 上传（支持，可选）** | OAuth + YouTube Data API 可断点续传；依据 `download_manifest.jsonl` 或 **`--youtube-upload-file` 指定路径**；CLI `--youtube-*` 或 GUI；`youtube_upload.enabled` 与 `youtube_upload.auto_after_download` 同时为 true 时**每条新视频下载后自动上传** |
+| **桌面 GUI** | 可选 PySide6：`douyin-dl-gui`（下载、Cookie、YouTube 清单/本地文件/目录上传、设置、日志） |
+| **YouTube 上传（支持，可选）** | OAuth + YouTube Data API 可断点续传；依据 `download_manifest.jsonl`，或 **`--youtube-upload-file`** / **`--youtube-upload-dir`**；CLI `--youtube-*` 或 GUI；`youtube_upload.enabled` 与 `youtube_upload.auto_after_download` 同时为 true 时**每条新视频下载后自动上传** |
 | **完成通知推送** | 下载完成后推 Bark / Telegram / Webhook |
 | 附加资源下载 | 封面、音乐、头像、JSON 元数据 |
 | 视频转写 | 可选功能，调用 OpenAI Transcriptions API |
@@ -121,7 +121,7 @@ douyin-dl-gui
   <img src="./img/SCR-20260503-qxvy.png" alt="抖音下载器桌面 GUI 截图" width="920" />
 </p>
 
-界面与 CLI 共用同一套核心逻辑：多链接下载、Cookie 状态与粘贴保存、YouTube 授权、基于清单的「上传最近视频」与「上传本地文件…」（对应 `--youtube-upload-file`）、数据库/代理/静默日志等常用设置，以及实时日志。Cookie 页可在 **macOS / Windows** 上一键打开终端运行 `python -m tools.cookie_fetcher`（详见该页按钮说明）。
+界面与 CLI 共用同一套核心逻辑：多链接下载、Cookie 状态与粘贴保存、YouTube 授权、基于清单的「上传最近视频」、「上传本地文件…」（`--youtube-upload-file`）与「上传目录…」（`--youtube-upload-dir`，可选勾选「上传目录时包含子文件夹」）、数据库/代理/静默日志等常用设置，以及实时日志。Cookie 页可在 **macOS / Windows** 上一键打开终端运行 `python -m tools.cookie_fetcher`（详见该页按钮说明）。
 
 ### 7) 打包桌面 GUI（macOS / Windows，PyInstaller）
 
@@ -230,7 +230,9 @@ douyin-dl -c config.yml \
 | `--serve-port PORT` | REST 服务监听端口（默认 8000） |
 | `--youtube-auth` | 执行 YouTube OAuth，保存本地 token（需 `[youtube]` 依赖 + 配置中 `youtube_upload`） |
 | `--youtube-upload-latest [N]` | 从清单上传最近 `N` 条；仅写 `--youtube-upload-latest` 且不带数字时默认 `N=1`；`N=0` 表示处理清单中全部行 |
-| `--youtube-upload-file PATH [PATH ...]` | 上传指定本地视频文件（可多个）；不读 manifest；标题默认用文件名（仍受 `title_template` 等配置约束）。与 `--youtube-upload-latest` 同时出现时**仅执行本项** |
+| `--youtube-upload-file PATH [PATH ...]` | 上传指定本地视频文件（可多个）；不读 manifest；标题默认用文件名（仍受 `title_template` 等配置约束）。若与其它上传类参数同时出现，优先级：**本项** > `--youtube-upload-dir` > `--youtube-upload-latest` |
+| `--youtube-upload-dir DIR` | 扫描目录内的视频并上传（默认**仅当前文件夹一层**，不递归）；不读 manifest；后缀与「上传本地文件」一致（如 `.mp4`、`.mov`、`.mkv` 等） |
+| `--youtube-upload-dir-recursive` | 与 `--youtube-upload-dir` 联用：递归包含子文件夹中的视频 |
 | `--youtube-dry-run` | 只打印上传计划，不调用 YouTube 上传接口 |
 | `--version` | 显示版本号 |
 
@@ -383,7 +385,7 @@ douyin-dl --serve --serve-port 8000
 
 ## 可选：YouTube 上传
 
-**清单模式：**上传 `Downloaded/download_manifest.jsonl` 中引用的**主 MP4** 条目（与配置里 `path` 为同一根目录）。**指定文件模式：**使用 `--youtube-upload-file`（见下第 6 步），与 manifest 无关。若 `database: true` 且库中已有历史，会按 `aweme_id`（或指定文件对应的稳定内部 id）跳过重复项。
+**清单模式：**上传 `Downloaded/download_manifest.jsonl` 中引用的**主 MP4** 条目（与配置里 `path` 为同一根目录）。**本地批量（非清单）：**使用 `--youtube-upload-file` 指定若干文件，或使用 **`--youtube-upload-dir`** 扫描某个文件夹（见下第 6、7 步）。若 `database: true` 且库中已有历史，会按 `aweme_id`（或指定文件/目录内文件对应的稳定内部 id）跳过重复项。
 
 1. **安装 Google 客户端库**（全量 `requirements.txt` 已含，或执行 `pip install -e ".[youtube]"`）。
 2. **Google Cloud**：启用 **YouTube Data API v3**，创建 **OAuth 桌面应用** 凭证，下载 JSON 客户端密钥文件。
@@ -408,7 +410,14 @@ douyin-dl --serve --serve-port 8000
    douyin-dl -c config.yml --youtube-upload-file ./a.mp4 /path/b.mov --youtube-dry-run
    ```
 
-若**不**希望在常规下载过程中自动上传，请保持 `youtube_upload.auto_after_download: false`（默认）；按需上传时使用上述 CLI 参数或 GUI 的 YouTube 页（**上传最近视频** / **上传本地文件…**）。
+7. **按目录上传**（将 `DIR` 换成你本机实际路径，例如下载目录 `./Downloaded` 或某一作者作品文件夹；默认只扫描该目录**直接下级**的视频文件；需要子文件夹时加 `--youtube-upload-dir-recursive`）：
+
+   ```bash
+   douyin-dl -c config.yml --youtube-upload-dir ./Downloaded
+   douyin-dl -c config.yml --youtube-upload-dir ./Downloaded --youtube-upload-dir-recursive
+   ```
+
+若**不**希望在常规下载过程中自动上传，请保持 `youtube_upload.auto_after_download: false`（默认）；按需上传时使用上述 CLI 参数或 GUI 的 YouTube 页（**上传最近视频** / **上传本地文件…** / **上传目录…**）。
 
 ### 完成后发送通知
 
