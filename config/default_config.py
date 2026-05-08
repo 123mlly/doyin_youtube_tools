@@ -91,5 +91,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "description_template": "{desc}\n\nAuthor: {author_name}\nAweme ID: {aweme_id}",
         "max_items_per_run": 0,
         "dry_run": False,
+        # 真实上传时在 stderr 显示 Rich 进度条（与下载总进度独立；在 executor 线程内绘制）
+        "show_upload_progress": True,
     },
 }

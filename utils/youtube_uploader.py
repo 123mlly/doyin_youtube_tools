@@ -9,7 +9,7 @@ import time
 import warnings
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 import aiofiles
 
@@ -227,9 +227,15 @@ class YouTubeAuthManager:
 
 
 class YouTubeUploader:
-    def __init__(self, settings: Dict[str, Any], database: Any = None):
+    def __init__(
+        self,
+        settings: Dict[str, Any],
+        database: Any = None,
+        progress_callback: Optional[Callable[[str], None]] = None,
+    ):
         self.settings = settings or {}
         self.database = database
+        self.progress_callback = progress_callback
         self.enabled = _as_bool(self.settings.get("enabled"), default=False)
         self.auto_after_download = _as_bool(
             self.settings.get("auto_after_download"), default=False
@@ -324,7 +330,11 @@ class YouTubeUploader:
             return result
 
         try:
-            video_id = await self._upload_video_async(video_path, metadata)
+            video_id = await self._upload_video_async(
+                video_path,
+                metadata,
+                aweme_id=aweme_id,
+            )
         except Exception as exc:
             message = _format_upload_exception(exc)
             logger.warning("YouTube upload failed for %s: %s", aweme_id, message)
@@ -393,13 +403,22 @@ class YouTubeUploader:
             "privacy_status": privacy_status,
         }
 
-    async def _upload_video_async(self, video_path: Path, metadata: Dict[str, Any]) -> str:
+    async def _upload_video_async(
+        self,
+        video_path: Path,
+        metadata: Dict[str, Any],
+        *,
+        aweme_id: str = "",
+    ) -> str:
         loop = asyncio.get_running_loop()
         return await loop.run_in_executor(
-            None, lambda: self._upload_video_sync(video_path, metadata)
+            None,
+            lambda: self._upload_video_sync(video_path, metadata, aweme_id=aweme_id),
         )
 
-    def _upload_video_sync(self, video_path: Path, metadata: Dict[str, Any]) -> str:
+    def _upload_video_sync(
+        self, video_path: Path, metadata: Dict[str, Any], *, aweme_id: str = ""
+    ) -> str:
         _flow_cls, _credentials_cls, _request_cls = _load_google_auth_dependencies()
         build_func, media_upload_cls, http_error_cls = _load_google_api_dependencies()
         credentials = self.auth.load_credentials()
@@ -422,7 +441,23 @@ class YouTubeUploader:
             body=body,
             media_body=media,
         )
-        return _resumable_upload(request, http_error_cls)
+        try:
+            total_bytes = max(int(video_path.stat().st_size), 1)
+        except OSError:
+            total_bytes = 1
+        show_bar = _as_bool(self.settings.get("show_upload_progress"), default=True)
+        title_hint = str(metadata.get("title") or video_path.name).strip() or "YouTube"
+        if len(title_hint) > 48:
+            title_hint = title_hint[:45] + "..."
+        return _resumable_upload(
+            request,
+            http_error_cls,
+            total_bytes=total_bytes,
+            show_progress=show_bar,
+            description=f"YouTube ↑ {title_hint}",
+            progress_callback=self.progress_callback,
+            progress_label=(aweme_id or title_hint),
+        )
 
     async def _record_result(self, result: YouTubeUploadResult) -> None:
         if not self.database:
@@ -462,12 +497,17 @@ async def publish_latest_from_manifest(
     base_path: Path,
     limit: int,
     database: Any = None,
+    progress_callback: Optional[Callable[[str], None]] = None,
 ) -> List[YouTubeUploadResult]:
     _suppress_google_future_warnings()
     records = _dedupe_manifest_batch(
         await _read_latest_manifest_records(base_path, limit)
     )
-    uploader = YouTubeUploader({**settings, "enabled": True}, database=database)
+    uploader = YouTubeUploader(
+        {**settings, "enabled": True},
+        database=database,
+        progress_callback=progress_callback,
+    )
     results = []
     max_items = int(settings.get("max_items_per_run") or 0)
     for record in records:
@@ -481,10 +521,15 @@ async def publish_paths_to_youtube(
     settings: Dict[str, Any],
     paths: List[Path],
     database: Any = None,
+    progress_callback: Optional[Callable[[str], None]] = None,
 ) -> List[YouTubeUploadResult]:
     """Upload local video files (not tied to download_manifest.jsonl)."""
     _suppress_google_future_warnings()
-    uploader = YouTubeUploader({**settings, "enabled": True}, database=database)
+    uploader = YouTubeUploader(
+        {**settings, "enabled": True},
+        database=database,
+        progress_callback=progress_callback,
+    )
     results: List[YouTubeUploadResult] = []
     dummy_base = Path(".")
     max_items = int(settings.get("max_items_per_run") or 0)
@@ -555,23 +600,105 @@ async def _read_latest_manifest_records(
     return records
 
 
-def _resumable_upload(request: Any, http_error_cls: Any) -> str:
-    response = None
-    retry = 0
-    while response is None:
+def _upload_progress_bytes(chunk_status: Any, total_bytes: int) -> int:
+    """Bytes uploaded so far from googleapiclient MediaUploadProgress (best effort)."""
+    if chunk_status is None:
+        return 0
+    rp = getattr(chunk_status, "resumable_progress", None)
+    if rp is not None:
+        return min(max(int(rp), 0), total_bytes)
+    try:
+        frac = float(chunk_status.progress())
+        return min(max(int(frac * total_bytes), 0), total_bytes)
+    except Exception:
+        return 0
+
+
+def _resumable_upload(
+    request: Any,
+    http_error_cls: Any,
+    *,
+    total_bytes: int = 1,
+    show_progress: bool = False,
+    description: str = "YouTube 上传",
+    progress_callback: Optional[Callable[[str], None]] = None,
+    progress_label: str = "",
+) -> str:
+    progress_cm: Any = None
+    progress: Any = None
+    task_id: Optional[int] = None
+    if show_progress and total_bytes > 0:
         try:
-            _status, response = request.next_chunk()
-            if response and response.get("id"):
-                return str(response["id"])
-        except http_error_cls as exc:
-            status = getattr(getattr(exc, "resp", None), "status", None)
-            if status not in RETRIABLE_STATUS_CODES:
-                raise
-            retry += 1
-            if retry > MAX_RETRIES:
-                raise YouTubeUploadError("YouTube upload retries exhausted") from exc
-            time.sleep(random.random() * (2 ** retry))
-    raise YouTubeUploadError(f"YouTube upload returned unexpected response: {response}")
+            from rich.console import Console
+            from rich.markup import escape
+            from rich.progress import (
+                BarColumn,
+                DownloadColumn,
+                Progress,
+                TextColumn,
+                TimeRemainingColumn,
+                TransferSpeedColumn,
+            )
+
+            safe_desc = escape(description) if description else "YouTube 上传"
+            progress_cm = Progress(
+                TextColumn("{task.description}"),
+                BarColumn(),
+                DownloadColumn(binary_units=True),
+                TransferSpeedColumn(),
+                TimeRemainingColumn(),
+                console=Console(stderr=True),
+                transient=True,
+                refresh_per_second=4,
+            )
+            progress = progress_cm.__enter__()
+            task_id = progress.add_task(safe_desc, total=total_bytes)
+        except Exception:
+            logger.debug("YouTube upload progress bar unavailable", exc_info=True)
+            progress_cm = None
+            progress = None
+            task_id = None
+
+    try:
+        response = None
+        retry = 0
+        last_pct = -1
+        while response is None:
+            try:
+                chunk_status, response = request.next_chunk()
+                if progress is not None and task_id is not None and chunk_status is not None:
+                    done = _upload_progress_bytes(chunk_status, total_bytes)
+                    progress.update(task_id, completed=done)
+                else:
+                    done = _upload_progress_bytes(chunk_status, total_bytes)
+                if progress_callback and total_bytes > 0:
+                    pct = min(100, max(0, int((done * 100) / total_bytes)))
+                    if pct != last_pct:
+                        tag = progress_label.strip() or "video"
+                        progress_callback(f"[i] 上传中 {tag}: {pct}%")
+                        last_pct = pct
+                if response and response.get("id"):
+                    if progress is not None and task_id is not None:
+                        progress.update(task_id, completed=total_bytes)
+                    if progress_callback:
+                        tag = progress_label.strip() or "video"
+                        progress_callback(f"[i] 上传完成 {tag}: 100%")
+                    return str(response["id"])
+            except http_error_cls as exc:
+                status = getattr(getattr(exc, "resp", None), "status", None)
+                if status not in RETRIABLE_STATUS_CODES:
+                    raise
+                retry += 1
+                if retry > MAX_RETRIES:
+                    raise YouTubeUploadError("YouTube upload retries exhausted") from exc
+                time.sleep(random.random() * (2 ** retry))
+        raise YouTubeUploadError(f"YouTube upload returned unexpected response: {response}")
+    finally:
+        if progress_cm is not None:
+            try:
+                progress_cm.__exit__(None, None, None)
+            except Exception:
+                logger.debug("YouTube upload progress teardown failed", exc_info=True)
 
 
 def _load_google_auth_dependencies():

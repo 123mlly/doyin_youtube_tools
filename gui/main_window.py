@@ -633,6 +633,7 @@ class MainWindow(QMainWindow):
         self._set_status("YouTube 上传进行中…")
         worker = YouTubeUploadWorker(self._youtube_options())
         worker.log_message.connect(self._append_log)
+        worker.upload_progress.connect(self._append_log)
         worker.upload_finished.connect(self._youtube_upload_finished)
         worker.failed.connect(self._task_failed)
         self._youtube_upload_worker = worker
@@ -654,6 +655,7 @@ class MainWindow(QMainWindow):
         self._set_status("YouTube 上传进行中…")
         worker = YouTubeUploadWorker(self._youtube_options(), file_paths=list(paths))
         worker.log_message.connect(self._append_log)
+        worker.upload_progress.connect(self._append_log)
         worker.upload_finished.connect(self._youtube_upload_finished)
         worker.failed.connect(self._task_failed)
         self._youtube_upload_worker = worker
@@ -685,6 +687,7 @@ class MainWindow(QMainWindow):
             self._youtube_options(), file_paths=[str(p) for p in paths]
         )
         worker.log_message.connect(self._append_log)
+        worker.upload_progress.connect(self._append_log)
         worker.upload_finished.connect(self._youtube_upload_finished)
         worker.failed.connect(self._task_failed)
         self._youtube_upload_worker = worker

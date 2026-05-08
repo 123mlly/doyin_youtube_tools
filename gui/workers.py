@@ -82,6 +82,7 @@ class YouTubeAuthWorker(_BaseWorker):
 
 class YouTubeUploadWorker(_BaseWorker):
     upload_finished = Signal(int, int, int, int)
+    upload_progress = Signal(str)
 
     def __init__(self, options: YouTubeOptions, file_paths: Optional[List[str]] = None):
         super().__init__()
@@ -94,10 +95,21 @@ class YouTubeUploadWorker(_BaseWorker):
     def _run(self) -> None:
         if self.file_paths:
             results = asyncio.run(
-                upload_paths_to_youtube(self.options, self.file_paths, log=self._log)
+                upload_paths_to_youtube(
+                    self.options,
+                    self.file_paths,
+                    log=self._log,
+                    progress_callback=self.upload_progress.emit,
+                )
             )
         else:
-            results = asyncio.run(upload_latest_to_youtube(self.options, log=self._log))
+            results = asyncio.run(
+                upload_latest_to_youtube(
+                    self.options,
+                    log=self._log,
+                    progress_callback=self.upload_progress.emit,
+                )
+            )
         success = sum(1 for result in results if result.status == "success")
         dry_run = sum(1 for result in results if result.status == "dry_run")
         skipped = sum(1 for result in results if result.status == "skipped")

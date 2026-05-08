@@ -49,6 +49,7 @@ class YouTubeOptions:
     privacy_status: str = "public"
     latest_count: int = 1
     dry_run: bool = True
+    show_upload_progress: bool = True
 
 
 @dataclass
@@ -103,6 +104,8 @@ def apply_youtube_options(config: ConfigLoader, options: YouTubeOptions) -> None
             "token_path": options.token_path or "config/youtube_token.json",
             "privacy_status": options.privacy_status or "public",
             "dry_run": bool(options.dry_run),
+            # GUI 使用独立日志回调展示进度，关闭 CLI Rich 进度条避免输出到终端 stderr。
+            "show_upload_progress": False,
         }
     )
     config.update(youtube_upload=youtube_upload)
@@ -206,6 +209,7 @@ async def upload_latest_to_youtube(
     options: YouTubeOptions,
     *,
     log: LogCallback = None,
+    progress_callback: Optional[Callable[[str], None]] = None,
 ) -> List[Any]:
     config = load_config(options.config_path)
     apply_youtube_options(config, options)
@@ -221,6 +225,7 @@ async def upload_latest_to_youtube(
             base_path,
             int(options.latest_count or 0),
             database=database,
+            progress_callback=progress_callback,
         )
         if log:
             prefix = {"success": "", "warning": "[!] ", "info": "[i] "}
@@ -237,6 +242,7 @@ async def upload_paths_to_youtube(
     paths: List[str],
     *,
     log: LogCallback = None,
+    progress_callback: Optional[Callable[[str], None]] = None,
 ) -> List[Any]:
     if not paths:
         if log:
@@ -254,6 +260,7 @@ async def upload_paths_to_youtube(
             youtube_settings(config),
             [Path(p) for p in paths],
             database=database,
+            progress_callback=progress_callback,
         )
         if log:
             prefix = {"success": "", "warning": "[!] ", "info": "[i] "}

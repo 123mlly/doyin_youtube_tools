@@ -271,6 +271,7 @@ youtube_upload:
     assert youtube_upload["auto_after_download"] is False
     assert youtube_upload["privacy_status"] == "public"
     assert youtube_upload["client_secret_path"] == "config/youtube_client_secret.json"
+    assert youtube_upload.get("show_upload_progress") is True
 
 
 def test_config_loader_supports_proxy_from_env(tmp_path, monkeypatch):
