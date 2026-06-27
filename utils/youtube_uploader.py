@@ -422,7 +422,18 @@ class YouTubeUploader:
         _flow_cls, _credentials_cls, _request_cls = _load_google_auth_dependencies()
         build_func, media_upload_cls, http_error_cls = _load_google_api_dependencies()
         credentials = self.auth.load_credentials()
-        youtube = build_func("youtube", "v3", credentials=credentials)
+        timeout_sec = _http_timeout_seconds_from_settings(self.settings)
+        try:
+            import httplib2
+            from google_auth_httplib2 import AuthorizedHttp
+        except ImportError as exc:
+            raise YouTubeUploadError(
+                "YouTube upload dependencies are missing. Install with: "
+                'pip install -e ".[youtube]"'
+            ) from exc
+        http = httplib2.Http(timeout=timeout_sec)
+        authed_http = AuthorizedHttp(credentials, http=http)
+        youtube = build_func("youtube", "v3", http=authed_http)
         body = {
             "snippet": {
                 "title": metadata["title"],
@@ -684,13 +695,36 @@ def _resumable_upload(
                         tag = progress_label.strip() or "video"
                         progress_callback(f"[i] 上传完成 {tag}: 100%")
                     return str(response["id"])
-            except http_error_cls as exc:
+            except Exception as exc:
+                if _is_retriable_transport_timeout(exc):
+                    retry += 1
+                    if retry > MAX_RETRIES:
+                        raise YouTubeUploadError(
+                            "YouTube upload timed out after retries; "
+                            "check network or raise youtube_upload.http_timeout_seconds"
+                        ) from exc
+                    logger.warning(
+                        "YouTube upload transport timeout, retry %s/%s: %s",
+                        retry,
+                        MAX_RETRIES,
+                        exc,
+                    )
+                    time.sleep(random.random() * (2 ** retry))
+                    continue
+                if not isinstance(exc, http_error_cls):
+                    raise
                 status = getattr(getattr(exc, "resp", None), "status", None)
                 if status not in RETRIABLE_STATUS_CODES:
                     raise
                 retry += 1
                 if retry > MAX_RETRIES:
                     raise YouTubeUploadError("YouTube upload retries exhausted") from exc
+                logger.warning(
+                    "YouTube upload HTTP %s, retry %s/%s",
+                    status,
+                    retry,
+                    MAX_RETRIES,
+                )
                 time.sleep(random.random() * (2 ** retry))
         raise YouTubeUploadError(f"YouTube upload returned unexpected response: {response}")
     finally:
@@ -725,6 +759,25 @@ def _load_google_api_dependencies():
             'pip install -e ".[youtube]"'
         ) from exc
     return build, MediaFileUpload, HttpError
+
+
+def _http_timeout_seconds_from_settings(settings: Dict[str, Any]) -> float:
+    raw = settings.get("http_timeout_seconds", 600)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return 600.0
+    if value <= 0:
+        return 600.0
+    return value
+
+
+def _is_retriable_transport_timeout(exc: BaseException) -> bool:
+    if isinstance(exc, TimeoutError):
+        return True
+    if isinstance(exc, OSError) and "timed out" in str(exc).lower():
+        return True
+    return False
 
 
 def _as_bool(value: Any, default: bool = False) -> bool:
@@ -853,6 +906,13 @@ def _format_upload_exception(exc: BaseException) -> str:
         return (
             "HTTP 403 | quotaExceeded: YouTube Data API 上传/写入配额已用完"
             "（默认按天重置，见 https://developers.google.com/youtube/v3/getting-started#quota ）"
+        )
+    if isinstance(exc, TimeoutError) or (
+        isinstance(exc, OSError) and "timed out" in str(exc).lower()
+    ):
+        return (
+            "TimeoutError: timed out（上传连接超时；请检查网络/代理，"
+            "或在 config.yml 的 youtube_upload.http_timeout_seconds 调大，默认 600）"
         )
     return f"{type(exc).__name__}: {_strip_html(text)[:500]}"
 

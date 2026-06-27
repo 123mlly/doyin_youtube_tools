@@ -9,8 +9,11 @@ from utils.youtube_uploader import (
     YouTubeUploadError,
     YouTubeUploadResult,
     _dedupe_manifest_batch,
+    _http_timeout_seconds_from_settings,
+    _is_retriable_transport_timeout,
     _is_uploadable_video_file,
     _manual_aweme_id_for_path,
+    _resumable_upload,
     collect_uploadable_videos_in_directory,
     _format_upload_exception,
     _normalize_youtube_tags,
@@ -379,3 +382,37 @@ def test_youtube_uploader_upload_success_with_mocked_google_client(
     video_id = uploader._upload_video_sync(video, uploader.build_metadata({"desc": "demo"}))
 
     assert video_id == "youtube-video-id"
+
+
+def test_http_timeout_seconds_from_settings_defaults_and_invalid():
+    assert _http_timeout_seconds_from_settings({}) == 600.0
+    assert _http_timeout_seconds_from_settings({"http_timeout_seconds": 900}) == 900.0
+    assert _http_timeout_seconds_from_settings({"http_timeout_seconds": 0}) == 600.0
+    assert _http_timeout_seconds_from_settings({"http_timeout_seconds": "bad"}) == 600.0
+
+
+def test_is_retriable_transport_timeout():
+    assert _is_retriable_transport_timeout(TimeoutError("timed out")) is True
+    assert _is_retriable_transport_timeout(OSError("timed out")) is True
+    assert _is_retriable_transport_timeout(ValueError("nope")) is False
+
+
+def test_resumable_upload_retries_on_timeout(monkeypatch):
+    calls = {"n": 0}
+
+    class FakeRequest:
+        def next_chunk(self):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise TimeoutError("timed out")
+            return None, {"id": "yt-id-after-retry"}
+
+    monkeypatch.setattr("utils.youtube_uploader.time.sleep", lambda _s: None)
+    video_id = _resumable_upload(FakeRequest(), Exception)
+    assert video_id == "yt-id-after-retry"
+    assert calls["n"] == 3
+
+
+def test_format_upload_exception_timeout_hint():
+    msg = _format_upload_exception(TimeoutError("timed out"))
+    assert "http_timeout_seconds" in msg
