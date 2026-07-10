@@ -93,5 +93,9 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "dry_run": False,
         # 真实上传时在 stderr 显示 Rich 进度条（与下载总进度独立；在 executor 线程内绘制）
         "show_upload_progress": True,
+        # googleapiclient/httplib2 默认 socket 超时偏短，慢网络易 TimeoutError；0 或无效值回退 600
+        "http_timeout_seconds": 600,
+        # 可恢复上传分块大小（字节）；须为 256KiB 的倍数，默认 8MiB
+        "upload_chunk_size_bytes": 8 * 1024 * 1024,
     },
 }

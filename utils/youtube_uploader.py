@@ -25,6 +25,10 @@ VALID_PRIVACY_STATUSES = {"public", "private", "unlisted"}
 YOUTUBE_MAX_TAGS = 30
 YOUTUBE_MAX_TAG_LEN = 30
 YOUTUBE_MAX_DESCRIPTION_CHARS = 5000
+# Resumable upload chunk size (must be a multiple of 256 KiB for googleapiclient)
+DEFAULT_UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024
+# GUI/log progress callback: emit at most every N percent (plus 100%)
+PROGRESS_CALLBACK_STEP_PCT = 5
 
 # 本地指定文件上传（非 manifest）时允许的后缀；manifest 内仍只选主 .mp4
 _UPLOADABLE_VIDEO_SUFFIXES = frozenset(
@@ -422,7 +426,18 @@ class YouTubeUploader:
         _flow_cls, _credentials_cls, _request_cls = _load_google_auth_dependencies()
         build_func, media_upload_cls, http_error_cls = _load_google_api_dependencies()
         credentials = self.auth.load_credentials()
-        youtube = build_func("youtube", "v3", credentials=credentials)
+        timeout_sec = _http_timeout_seconds_from_settings(self.settings)
+        try:
+            import httplib2
+            from google_auth_httplib2 import AuthorizedHttp
+        except ImportError as exc:
+            raise YouTubeUploadError(
+                "YouTube upload dependencies are missing. Install with: "
+                'pip install -e ".[youtube]"'
+            ) from exc
+        http = httplib2.Http(timeout=timeout_sec)
+        authed_http = AuthorizedHttp(credentials, http=http)
+        youtube = build_func("youtube", "v3", http=authed_http)
         body = {
             "snippet": {
                 "title": metadata["title"],
@@ -435,7 +450,10 @@ class YouTubeUploader:
                 "selfDeclaredMadeForKids": False,
             },
         }
-        media = media_upload_cls(str(video_path), chunksize=-1, resumable=True)
+        chunksize = _upload_chunk_size_from_settings(self.settings)
+        media = media_upload_cls(
+            str(video_path), chunksize=chunksize, resumable=True
+        )
         request = youtube.videos().insert(
             part="snippet,status",
             body=body,
@@ -666,31 +684,52 @@ def _resumable_upload(
         while response is None:
             try:
                 chunk_status, response = request.next_chunk()
-                if progress is not None and task_id is not None and chunk_status is not None:
-                    done = _upload_progress_bytes(chunk_status, total_bytes)
+                done = _upload_progress_bytes(chunk_status, total_bytes)
+                if progress is not None and task_id is not None:
                     progress.update(task_id, completed=done)
-                else:
-                    done = _upload_progress_bytes(chunk_status, total_bytes)
                 if progress_callback and total_bytes > 0:
                     pct = min(100, max(0, int((done * 100) / total_bytes)))
-                    if pct != last_pct:
+                    if _should_emit_progress_pct(pct, last_pct):
                         tag = progress_label.strip() or "video"
                         progress_callback(f"[i] 上传中 {tag}: {pct}%")
                         last_pct = pct
                 if response and response.get("id"):
                     if progress is not None and task_id is not None:
                         progress.update(task_id, completed=total_bytes)
-                    if progress_callback:
+                    if progress_callback and last_pct < 100:
                         tag = progress_label.strip() or "video"
                         progress_callback(f"[i] 上传完成 {tag}: 100%")
                     return str(response["id"])
-            except http_error_cls as exc:
+            except Exception as exc:
+                if _is_retriable_transport_timeout(exc):
+                    retry += 1
+                    if retry > MAX_RETRIES:
+                        raise YouTubeUploadError(
+                            "YouTube upload timed out after retries; "
+                            "check network or raise youtube_upload.http_timeout_seconds"
+                        ) from exc
+                    logger.warning(
+                        "YouTube upload transport timeout, retry %s/%s: %s",
+                        retry,
+                        MAX_RETRIES,
+                        exc,
+                    )
+                    time.sleep(random.random() * (2 ** retry))
+                    continue
+                if not isinstance(exc, http_error_cls):
+                    raise
                 status = getattr(getattr(exc, "resp", None), "status", None)
                 if status not in RETRIABLE_STATUS_CODES:
                     raise
                 retry += 1
                 if retry > MAX_RETRIES:
                     raise YouTubeUploadError("YouTube upload retries exhausted") from exc
+                logger.warning(
+                    "YouTube upload HTTP %s, retry %s/%s",
+                    status,
+                    retry,
+                    MAX_RETRIES,
+                )
                 time.sleep(random.random() * (2 ** retry))
         raise YouTubeUploadError(f"YouTube upload returned unexpected response: {response}")
     finally:
@@ -725,6 +764,71 @@ def _load_google_api_dependencies():
             'pip install -e ".[youtube]"'
         ) from exc
     return build, MediaFileUpload, HttpError
+
+
+def _http_timeout_seconds_from_settings(settings: Dict[str, Any]) -> float:
+    raw = settings.get("http_timeout_seconds", 600)
+    try:
+        value = float(raw)
+    except (TypeError, ValueError):
+        return 600.0
+    if value <= 0:
+        return 600.0
+    return value
+
+
+def _upload_chunk_size_from_settings(settings: Dict[str, Any]) -> int:
+    """Return MediaFileUpload chunksize (multiple of 256 KiB), or default 8 MiB."""
+    raw = settings.get("upload_chunk_size_bytes", DEFAULT_UPLOAD_CHUNK_SIZE)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_UPLOAD_CHUNK_SIZE
+    if value <= 0:
+        return DEFAULT_UPLOAD_CHUNK_SIZE
+    # googleapiclient requires multiples of 256 KiB when not uploading in one shot
+    unit = 256 * 1024
+    return max(unit, (value // unit) * unit)
+
+
+def _should_emit_progress_pct(pct: int, last_pct: int) -> bool:
+    """Throttle log/GUI progress to every PROGRESS_CALLBACK_STEP_PCT (and 100%)."""
+    if pct <= last_pct:
+        return False
+    if pct >= 100:
+        return True
+    step = PROGRESS_CALLBACK_STEP_PCT
+    # Treat unset last_pct (-1) as 0 so we do not emit a useless 0% line
+    baseline = max(last_pct, 0)
+    return pct // step > baseline // step
+
+
+def _is_retriable_transport_timeout(
+    exc: BaseException, _seen: Optional[set] = None
+) -> bool:
+    seen = _seen if _seen is not None else set()
+    eid = id(exc)
+    if eid in seen:
+        return False
+    seen.add(eid)
+    if isinstance(exc, TimeoutError):
+        return True
+    # socket.timeout is TimeoutError on Py3; also catch wrapped OSError messages
+    if isinstance(exc, OSError) and "timed out" in str(exc).lower():
+        return True
+    cause = getattr(exc, "__cause__", None)
+    if isinstance(cause, BaseException) and _is_retriable_transport_timeout(
+        cause, seen
+    ):
+        return True
+    ctx = getattr(exc, "__context__", None)
+    if (
+        isinstance(ctx, BaseException)
+        and ctx is not cause
+        and _is_retriable_transport_timeout(ctx, seen)
+    ):
+        return True
+    return False
 
 
 def _as_bool(value: Any, default: bool = False) -> bool:
@@ -853,6 +957,13 @@ def _format_upload_exception(exc: BaseException) -> str:
         return (
             "HTTP 403 | quotaExceeded: YouTube Data API 上传/写入配额已用完"
             "（默认按天重置，见 https://developers.google.com/youtube/v3/getting-started#quota ）"
+        )
+    if isinstance(exc, TimeoutError) or (
+        isinstance(exc, OSError) and "timed out" in str(exc).lower()
+    ):
+        return (
+            "TimeoutError: timed out（上传连接超时；请检查网络/代理，"
+            "或在 config.yml 的 youtube_upload.http_timeout_seconds 调大，默认 600）"
         )
     return f"{type(exc).__name__}: {_strip_html(text)[:500]}"
 

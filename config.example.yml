@@ -113,6 +113,9 @@ youtube_upload:
   description_template: "{desc}\n\nAuthor: {author_name}\nAweme ID: {aweme_id}"
   max_items_per_run: 0
   dry_run: false
+  show_upload_progress: true   # CLI Rich 上传进度条；GUI 会强制关闭并改用日志进度
+  http_timeout_seconds: 600    # 上传 HTTP 超时（秒）；慢网络可调大
+  upload_chunk_size_bytes: 8388608  # 分块大小（8MiB）；须为 256KiB 倍数
 
 cookies:
   msToken: YOUR_MS_TOKEN

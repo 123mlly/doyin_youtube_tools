@@ -49,7 +49,6 @@ class YouTubeOptions:
     privacy_status: str = "public"
     latest_count: int = 1
     dry_run: bool = True
-    show_upload_progress: bool = True
 
 
 @dataclass

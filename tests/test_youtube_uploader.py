@@ -8,9 +8,15 @@ from utils.youtube_uploader import (
     YouTubeUploader,
     YouTubeUploadError,
     YouTubeUploadResult,
+    DEFAULT_UPLOAD_CHUNK_SIZE,
     _dedupe_manifest_batch,
+    _http_timeout_seconds_from_settings,
+    _is_retriable_transport_timeout,
     _is_uploadable_video_file,
     _manual_aweme_id_for_path,
+    _resumable_upload,
+    _should_emit_progress_pct,
+    _upload_chunk_size_from_settings,
     collect_uploadable_videos_in_directory,
     _format_upload_exception,
     _normalize_youtube_tags,
@@ -354,6 +360,8 @@ def test_youtube_uploader_upload_success_with_mocked_google_client(
             assert part == "snippet,status"
             assert body["status"]["privacyStatus"] == "public"
             assert media_body.path == str(video)
+            assert media_body.chunksize == DEFAULT_UPLOAD_CHUNK_SIZE
+            assert media_body.resumable is True
             return FakeRequest()
 
     class FakeService:
@@ -379,3 +387,99 @@ def test_youtube_uploader_upload_success_with_mocked_google_client(
     video_id = uploader._upload_video_sync(video, uploader.build_metadata({"desc": "demo"}))
 
     assert video_id == "youtube-video-id"
+
+
+def test_http_timeout_seconds_from_settings_defaults_and_invalid():
+    assert _http_timeout_seconds_from_settings({}) == 600.0
+    assert _http_timeout_seconds_from_settings({"http_timeout_seconds": 900}) == 900.0
+    assert _http_timeout_seconds_from_settings({"http_timeout_seconds": 0}) == 600.0
+    assert _http_timeout_seconds_from_settings({"http_timeout_seconds": "bad"}) == 600.0
+
+
+def test_upload_chunk_size_from_settings_aligns_to_256kib():
+    assert _upload_chunk_size_from_settings({}) == DEFAULT_UPLOAD_CHUNK_SIZE
+    assert _upload_chunk_size_from_settings({"upload_chunk_size_bytes": 0}) == (
+        DEFAULT_UPLOAD_CHUNK_SIZE
+    )
+    # 1 MiB is already a multiple of 256 KiB
+    assert _upload_chunk_size_from_settings({"upload_chunk_size_bytes": 1024 * 1024}) == (
+        1024 * 1024
+    )
+    # Round down to 256 KiB boundary
+    assert _upload_chunk_size_from_settings(
+        {"upload_chunk_size_bytes": 1024 * 1024 + 100}
+    ) == (1024 * 1024)
+
+
+def test_should_emit_progress_pct_throttles():
+    assert _should_emit_progress_pct(0, -1) is False
+    assert _should_emit_progress_pct(5, -1) is True
+    assert _should_emit_progress_pct(6, 5) is False
+    assert _should_emit_progress_pct(10, 5) is True
+    assert _should_emit_progress_pct(100, 95) is True
+    assert _should_emit_progress_pct(4, 4) is False
+
+
+def test_is_retriable_transport_timeout():
+    assert _is_retriable_transport_timeout(TimeoutError("timed out")) is True
+    assert _is_retriable_transport_timeout(OSError("timed out")) is True
+    assert _is_retriable_transport_timeout(ValueError("nope")) is False
+    wrapped = RuntimeError("wrap")
+    wrapped.__cause__ = TimeoutError("timed out")
+    assert _is_retriable_transport_timeout(wrapped) is True
+
+
+def test_resumable_upload_retries_on_timeout(monkeypatch):
+    calls = {"n": 0}
+
+    class FakeRequest:
+        def next_chunk(self):
+            calls["n"] += 1
+            if calls["n"] < 3:
+                raise TimeoutError("timed out")
+            return None, {"id": "yt-id-after-retry"}
+
+    monkeypatch.setattr("utils.youtube_uploader.time.sleep", lambda _s: None)
+    video_id = _resumable_upload(FakeRequest(), Exception)
+    assert video_id == "yt-id-after-retry"
+    assert calls["n"] == 3
+
+
+def test_format_upload_exception_timeout_hint():
+    msg = _format_upload_exception(TimeoutError("timed out"))
+    assert "http_timeout_seconds" in msg
+
+
+def test_resumable_upload_progress_callback_throttled(monkeypatch):
+    events = []
+
+    class FakeStatus:
+        def __init__(self, done):
+            self.resumable_progress = done
+
+    class FakeRequest:
+        def __init__(self):
+            self.n = 0
+            self.sizes = [1_000_000, 3_000_000, 5_000_000, 8_000_000, 10_000_000]
+
+        def next_chunk(self):
+            done = self.sizes[self.n]
+            self.n += 1
+            if done >= 10_000_000:
+                return FakeStatus(done), {"id": "done"}
+            return FakeStatus(done), None
+
+    video_id = _resumable_upload(
+        FakeRequest(),
+        Exception,
+        total_bytes=10_000_000,
+        show_progress=False,
+        progress_callback=events.append,
+        progress_label="vid",
+    )
+    assert video_id == "done"
+    # 10%, 30%, 50%, 80%, then completion 100% (or 100% from last chunk)
+    assert any("10%" in e for e in events)
+    assert any("100%" in e for e in events)
+    # Should not emit every single percent
+    assert len(events) <= 8
