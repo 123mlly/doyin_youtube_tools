@@ -273,6 +273,7 @@ youtube_upload:
     assert youtube_upload["client_secret_path"] == "config/youtube_client_secret.json"
     assert youtube_upload.get("show_upload_progress") is True
     assert youtube_upload.get("http_timeout_seconds") == 600
+    assert youtube_upload.get("upload_chunk_size_bytes") == 8 * 1024 * 1024
 
 
 def test_config_loader_supports_proxy_from_env(tmp_path, monkeypatch):

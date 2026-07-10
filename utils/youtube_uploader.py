@@ -25,6 +25,10 @@ VALID_PRIVACY_STATUSES = {"public", "private", "unlisted"}
 YOUTUBE_MAX_TAGS = 30
 YOUTUBE_MAX_TAG_LEN = 30
 YOUTUBE_MAX_DESCRIPTION_CHARS = 5000
+# Resumable upload chunk size (must be a multiple of 256 KiB for googleapiclient)
+DEFAULT_UPLOAD_CHUNK_SIZE = 8 * 1024 * 1024
+# GUI/log progress callback: emit at most every N percent (plus 100%)
+PROGRESS_CALLBACK_STEP_PCT = 5
 
 # 本地指定文件上传（非 manifest）时允许的后缀；manifest 内仍只选主 .mp4
 _UPLOADABLE_VIDEO_SUFFIXES = frozenset(
@@ -446,7 +450,10 @@ class YouTubeUploader:
                 "selfDeclaredMadeForKids": False,
             },
         }
-        media = media_upload_cls(str(video_path), chunksize=-1, resumable=True)
+        chunksize = _upload_chunk_size_from_settings(self.settings)
+        media = media_upload_cls(
+            str(video_path), chunksize=chunksize, resumable=True
+        )
         request = youtube.videos().insert(
             part="snippet,status",
             body=body,
@@ -677,21 +684,19 @@ def _resumable_upload(
         while response is None:
             try:
                 chunk_status, response = request.next_chunk()
-                if progress is not None and task_id is not None and chunk_status is not None:
-                    done = _upload_progress_bytes(chunk_status, total_bytes)
+                done = _upload_progress_bytes(chunk_status, total_bytes)
+                if progress is not None and task_id is not None:
                     progress.update(task_id, completed=done)
-                else:
-                    done = _upload_progress_bytes(chunk_status, total_bytes)
                 if progress_callback and total_bytes > 0:
                     pct = min(100, max(0, int((done * 100) / total_bytes)))
-                    if pct != last_pct:
+                    if _should_emit_progress_pct(pct, last_pct):
                         tag = progress_label.strip() or "video"
                         progress_callback(f"[i] 上传中 {tag}: {pct}%")
                         last_pct = pct
                 if response and response.get("id"):
                     if progress is not None and task_id is not None:
                         progress.update(task_id, completed=total_bytes)
-                    if progress_callback:
+                    if progress_callback and last_pct < 100:
                         tag = progress_label.strip() or "video"
                         progress_callback(f"[i] 上传完成 {tag}: 100%")
                     return str(response["id"])
@@ -772,10 +777,56 @@ def _http_timeout_seconds_from_settings(settings: Dict[str, Any]) -> float:
     return value
 
 
-def _is_retriable_transport_timeout(exc: BaseException) -> bool:
+def _upload_chunk_size_from_settings(settings: Dict[str, Any]) -> int:
+    """Return MediaFileUpload chunksize (multiple of 256 KiB), or default 8 MiB."""
+    raw = settings.get("upload_chunk_size_bytes", DEFAULT_UPLOAD_CHUNK_SIZE)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return DEFAULT_UPLOAD_CHUNK_SIZE
+    if value <= 0:
+        return DEFAULT_UPLOAD_CHUNK_SIZE
+    # googleapiclient requires multiples of 256 KiB when not uploading in one shot
+    unit = 256 * 1024
+    return max(unit, (value // unit) * unit)
+
+
+def _should_emit_progress_pct(pct: int, last_pct: int) -> bool:
+    """Throttle log/GUI progress to every PROGRESS_CALLBACK_STEP_PCT (and 100%)."""
+    if pct <= last_pct:
+        return False
+    if pct >= 100:
+        return True
+    step = PROGRESS_CALLBACK_STEP_PCT
+    # Treat unset last_pct (-1) as 0 so we do not emit a useless 0% line
+    baseline = max(last_pct, 0)
+    return pct // step > baseline // step
+
+
+def _is_retriable_transport_timeout(
+    exc: BaseException, _seen: Optional[set] = None
+) -> bool:
+    seen = _seen if _seen is not None else set()
+    eid = id(exc)
+    if eid in seen:
+        return False
+    seen.add(eid)
     if isinstance(exc, TimeoutError):
         return True
+    # socket.timeout is TimeoutError on Py3; also catch wrapped OSError messages
     if isinstance(exc, OSError) and "timed out" in str(exc).lower():
+        return True
+    cause = getattr(exc, "__cause__", None)
+    if isinstance(cause, BaseException) and _is_retriable_transport_timeout(
+        cause, seen
+    ):
+        return True
+    ctx = getattr(exc, "__context__", None)
+    if (
+        isinstance(ctx, BaseException)
+        and ctx is not cause
+        and _is_retriable_transport_timeout(ctx, seen)
+    ):
         return True
     return False
 
